@@ -1,0 +1,192 @@
+package io.github.arnavdugad.ember.ui.onboarding
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import io.github.arnavdugad.ember.data.location.LocationRepository
+import io.github.arnavdugad.ember.data.model.Gender
+import io.github.arnavdugad.ember.data.model.LookingFor
+import io.github.arnavdugad.ember.data.model.Photo
+import io.github.arnavdugad.ember.data.model.ProfileDraft
+import io.github.arnavdugad.ember.data.model.ProfilePrompt
+import io.github.arnavdugad.ember.data.model.PromptTemplate
+import io.github.arnavdugad.ember.data.model.toDraft
+import io.github.arnavdugad.ember.data.repo.AuthRepository
+import io.github.arnavdugad.ember.data.repo.ProfileRepository
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import javax.inject.Inject
+
+data class EditorState(
+    val draft: ProfileDraft = ProfileDraft(),
+    val loaded: Boolean = false,
+    val uploading: Int = 0,
+    val locating: Boolean = false,
+    val saving: Boolean = false,
+    val saved: Boolean = false,
+    val error: String? = null,
+) {
+    val canAddPhotos: Boolean get() = draft.photos.size + uploading < MAX_PHOTOS
+
+    companion object {
+        const val MAX_PHOTOS = 6
+        const val MAX_PROMPTS = 3
+        const val MAX_VIBES = 6
+        const val MAX_INTERESTS = 10
+    }
+}
+
+/** Backs both the onboarding wizard and the profile editor. */
+@HiltViewModel
+class ProfileEditorViewModel @Inject constructor(
+    private val profiles: ProfileRepository,
+    private val auth: AuthRepository,
+    private val location: LocationRepository,
+) : ViewModel() {
+    private val _state = MutableStateFlow(EditorState())
+    val state: StateFlow<EditorState> = _state.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val existing = withTimeoutOrNull(4_000) { profiles.observeMyProfile().filterNotNull().first() }
+            val matchOnly = withTimeoutOrNull(2_000) { profiles.observeMyMatchOnly().firstOrNull() }
+            _state.update { s ->
+                val draft = existing?.takeIf { it.name.isNotBlank() }?.toDraft(matchOnly) ?: s.draft
+                s.copy(draft = draft, loaded = true)
+            }
+        }
+    }
+
+    private fun edit(block: ProfileDraft.() -> ProfileDraft) = _state.update { it.copy(draft = it.draft.block(), error = null, saved = false) }
+
+    fun setName(value: String) = edit { copy(name = value) }
+    fun setGender(value: Gender) = edit { copy(gender = value) }
+    fun toggleInterestedIn(value: Gender) = edit { copy(interestedIn = interestedIn.toggle(value)) }
+    fun setBio(value: String) = edit { copy(bio = value) }
+    fun setHeight(value: Int?) = edit { copy(heightCm = value) }
+    fun setLookingFor(value: LookingFor) = edit { copy(lookingFor = value) }
+    fun setAfterDark(value: Boolean) = edit { copy(afterDark = value) }
+    fun setCity(value: String) = edit { copy(city = value, lat = null, lng = null) }
+
+    fun toggleVibe(key: String) = edit { copy(vibes = vibes.toggleCapped(key, EditorState.MAX_VIBES)) }
+    fun toggleInterest(value: String) = edit { copy(interests = interests.toggleCapped(value, EditorState.MAX_INTERESTS)) }
+    fun toggleBoundary(key: String) = edit { copy(matchOnly = matchOnly.copy(boundaries = matchOnly.boundaries.toggleCapped(key, 8))) }
+    fun toggleTurnOn(key: String) = edit { copy(matchOnly = matchOnly.copy(turnOns = matchOnly.turnOns.toggleCapped(key, 8))) }
+
+    fun addPrompt(template: PromptTemplate) = edit {
+        if (prompts.size >= EditorState.MAX_PROMPTS || prompts.any { it.id == template.id }) this
+        else copy(prompts = prompts + ProfilePrompt(template.id, template.question, ""))
+    }
+
+    fun answerPrompt(id: String, answer: String) = edit {
+        copy(prompts = prompts.map { if (it.id == id) it.copy(answer = answer.take(160)) else it })
+    }
+
+    fun removePrompt(id: String) = edit { copy(prompts = prompts.filterNot { it.id == id }) }
+
+    fun addPhotos(uris: List<Uri>) {
+        val room = EditorState.MAX_PHOTOS - _state.value.draft.photos.size - _state.value.uploading
+        uris.take(room.coerceAtLeast(0)).forEach { uri ->
+            viewModelScope.launch {
+                _state.update { it.copy(uploading = it.uploading + 1) }
+                val result = runCatching { profiles.uploadPhoto(uri) }
+                _state.update { s ->
+                    val photo = result.getOrNull()
+                    s.copy(
+                        uploading = s.uploading - 1,
+                        draft = if (photo != null) s.draft.copy(photos = s.draft.photos + photo) else s.draft,
+                        error = result.exceptionOrNull()?.let { "Couldn't upload that photo: ${it.message}" },
+                    )
+                }
+            }
+        }
+    }
+
+    fun removePhoto(photo: Photo) {
+        edit { copy(photos = photos.filterNot { it.id == photo.id }) }
+        viewModelScope.launch { runCatching { profiles.deletePhoto(photo) } }
+    }
+
+    fun makeMainPhoto(photo: Photo) = edit { copy(photos = listOf(photo) + photos.filterNot { it.id == photo.id }) }
+
+    fun locate() {
+        viewModelScope.launch {
+            _state.update { it.copy(locating = true) }
+            val city = runCatching { location.currentCity() }.getOrNull()
+            _state.update { s ->
+                if (city == null) {
+                    s.copy(locating = false, error = "Couldn't find your city. You can type it instead.")
+                } else {
+                    s.copy(locating = false, draft = s.draft.copy(city = city.city, lat = city.lat, lng = city.lng))
+                }
+            }
+        }
+    }
+
+    fun save(finishOnboarding: Boolean) {
+        val draft = _state.value.draft
+        val problem = validate()
+        if (problem != null) {
+            _state.update { it.copy(error = problem) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true, error = null) }
+            val result = runCatching {
+                val cleaned = draft.copy(prompts = draft.prompts.filter { it.answer.isNotBlank() })
+                profiles.saveProfile(cleaned, finishOnboarding)
+            }
+            _state.update {
+                it.copy(saving = false, saved = result.isSuccess, error = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't save. Try again." })
+            }
+        }
+    }
+
+    fun signOut() {
+        viewModelScope.launch { auth.signOut() }
+    }
+
+    /** Step-level validation for the wizard; null when the step is complete. */
+    fun stepProblem(step: SetupStep): String? {
+        val d = _state.value.draft
+        return when (step) {
+            SetupStep.Basics -> when {
+                d.name.isBlank() -> "What should we call you?"
+                d.gender == null -> "Pick the option that fits you best."
+                d.interestedIn.isEmpty() -> "Who would you like to meet?"
+                else -> null
+            }
+            SetupStep.Photos -> if (d.photos.isEmpty()) "Add at least one photo." else if (_state.value.uploading > 0) "Hang on, still uploading." else null
+            SetupStep.Location -> if (d.city.isBlank()) "Add your city so we can show people nearby." else null
+            else -> null
+        }
+    }
+
+    /** Unanswered prompts are dropped on save rather than blocking it. */
+    private fun validate(): String? = SetupStep.entries.firstNotNullOfOrNull { stepProblem(it) }
+
+    private fun <T> Set<T>.toggle(value: T) = if (value in this) this - value else this + value
+    private fun List<String>.toggleCapped(value: String, cap: Int) = when {
+        value in this -> this - value
+        size >= cap -> this
+        else -> this + value
+    }
+}
+
+enum class SetupStep(val title: String, val subtitle: String) {
+    Basics("The basics", "First impressions start here."),
+    Photos("Show your best side", "Up to six photos. Keep them flirty, not explicit."),
+    About("About you", "A little mystery is good. A little info is better."),
+    Prompts("Break the ice", "Pick up to three cheeky prompts. Your answers spark the best openers."),
+    Vibes("Your vibe", "What are you into? What's your energy?"),
+    Intent("What you're after", "Be upfront. It saves everyone time."),
+    Location("Where are you?", "We only ever show your city, never your exact location."),
+}
