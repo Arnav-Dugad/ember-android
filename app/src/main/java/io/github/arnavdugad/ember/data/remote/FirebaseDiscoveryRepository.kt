@@ -10,8 +10,10 @@ import io.github.arnavdugad.ember.core.util.Connectivity
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
+import io.github.arnavdugad.ember.data.model.LikeNote
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
+import io.github.arnavdugad.ember.data.model.spotlightFirst
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -66,15 +68,11 @@ class FirebaseDiscoveryRepository @Inject constructor(
         return candidates.asSequence()
             .filter { it.uid != uid && it.uid !in swiped && it.uid !in blocked && it.uid !in hiddenBy && !it.paused }
             .filter { !(hideDemos && it.isDemo) }
-            .filter { it.age in filters.minAge..filters.maxAge }
-            .filter { filters.lookingFor.isEmpty() || it.lookingFor in filters.lookingFor }
-            .filter { !afterDark || it.afterDark || it.lookingFor.isAdventurous }
-            .filter { !filters.freeTonightOnly || it.isFreeTonight(now) }
-            .filter { me.interestedIn.isEmpty() || it.gender in me.interestedIn }
-            .filter { it.interestedIn.isEmpty() || me.gender == null || me.gender in it.interestedIn }
+            .filter { it.matches(filters, afterDark, me, now) }
             .map { it.withDistanceFrom(origin) }
             .toList()
             .nearFirst(filters.maxDistanceKm, random)
+            .spotlightFirst(now)
     }
 
     /**
@@ -83,18 +81,21 @@ class FirebaseDiscoveryRepository @Inject constructor(
      * server (the rules read both likes), so it waits for the next deck load while online.
      * Returns the new match's id when this like completed one.
      */
-    override suspend fun swipe(target: Profile, direction: SwipeDirection): String? {
+    override suspend fun swipe(target: Profile, direction: SwipeDirection, note: LikeNote?): String? {
         val uid = auth.requireUid()
+        val like = direction != SwipeDirection.Nope
+        // The note goes on both: likedBy is what they see, and my own swipe is the copy I can read
+        // back to post it as my first message if they're the one who completes the match.
+        val noteField = if (like && note != null) mapOf("note" to note.toFirestore()) else emptyMap()
         val batch = db.batch()
         batch.set(
             users.document(uid).collection("swipes").document(target.uid),
-            mapOf("direction" to direction.key, "createdAt" to FieldValue.serverTimestamp()),
+            mapOf("direction" to direction.key, "createdAt" to FieldValue.serverTimestamp()) + noteField,
         )
-        val like = direction != SwipeDirection.Nope
         if (like) {
             batch.set(
                 users.document(target.uid).collection("likedBy").document(uid),
-                mapOf("createdAt" to FieldValue.serverTimestamp(), "super" to (direction == SwipeDirection.Super)),
+                mapOf("createdAt" to FieldValue.serverTimestamp(), "super" to (direction == SwipeDirection.Super)) + noteField,
             )
         }
         val commit = batch.commit()
@@ -146,6 +147,12 @@ class FirebaseDiscoveryRepository @Inject constructor(
         }
     }
 
+    override suspend fun myNote(targetUid: String): LikeNote? {
+        val uid = auth.requireUid()
+        val swipe = users.document(uid).collection("swipes").document(targetUid).get().await()
+        return swipe.data?.map("note")?.toLikeNote()
+    }
+
     override suspend fun rewind(targetUid: String): Boolean {
         val uid = auth.requireUid()
         val batch = db.batch()
@@ -174,7 +181,14 @@ class FirebaseDiscoveryRepository @Inject constructor(
                 val excluded = blocks?.documents.orEmpty().map { it.id }.toSet() + hidden?.documents.orEmpty().map { it.id }
                 likes?.documents.orEmpty()
                     .filter { it.id !in excluded }
-                    .map { Admirer(uid = it.id, superLike = it.getBoolean("super") ?: false, likedAt = it.getTimestamp("createdAt")?.toInstant()) }
+                    .map {
+                        Admirer(
+                            uid = it.id,
+                            superLike = it.getBoolean("super") ?: false,
+                            likedAt = it.getTimestamp("createdAt")?.toInstant(),
+                            note = it.data?.map("note")?.toLikeNote(),
+                        )
+                    }
                     .sortedByDescending { it.likedAt ?: Instant.EPOCH }
             }
         }
@@ -192,6 +206,19 @@ class FirebaseDiscoveryRepository @Inject constructor(
         const val COMMIT_TIMEOUT_MS = 8_000L
     }
 }
+
+/**
+ * The filters a deck candidate must pass, given my own profile [me]. "Online now" only applies
+ * while I show my own activity (hiding it hides everyone's, so the chip is gone too).
+ */
+internal fun Profile.matches(filters: DiscoveryFilters, afterDark: Boolean, me: Profile, now: Instant): Boolean =
+    age in filters.minAge..filters.maxAge &&
+        (filters.lookingFor.isEmpty() || lookingFor in filters.lookingFor) &&
+        (!afterDark || this.afterDark || lookingFor.isAdventurous) &&
+        (!filters.freeTonightOnly || isFreeTonight(now)) &&
+        (!filters.onlineOnly || me.hideActivity || isOnline(now = now)) &&
+        (me.interestedIn.isEmpty() || gender in me.interestedIn) &&
+        (interestedIn.isEmpty() || me.gender == null || me.gender in interestedIn)
 
 /** Sets [Profile.distanceKm] from [origin] (lat to lng), when both ends have coordinates. */
 internal fun Profile.withDistanceFrom(origin: Pair<Double, Double>?): Profile {

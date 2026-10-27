@@ -676,3 +676,196 @@ describe("reports and the daily report limit", () => {
     await assertSucceeds(sendReport(BOB, 1));
   });
 });
+
+// ---------- presence, Spotlight and like notes (Discover & profiles) ----------
+
+describe("presence: lastActiveAt and hideActivity", () => {
+  const midnight = () => {
+    const n = new Date();
+    return Timestamp.fromDate(new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())));
+  };
+  const inMinutes = (m) => Timestamp.fromMillis(Date.now() + m * 60_000);
+
+  test("the heartbeat writes server time; never the future", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { lastActiveAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { lastActiveAt: inMinutes(-90) }));
+    // A future value would pin a profile to the top of everyone's deck.
+    await assertFails(updateDoc(doc(fs, "users/alice"), { lastActiveAt: inMinutes(60) }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { lastActiveAt: "now" }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { lastActiveAt: serverTimestamp() }));
+  });
+
+  test("hideActivity is an optional boolean", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideActivity: false }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { hideActivity: "yes" }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { hideActivity: null }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { hideActivity: true }));
+  });
+
+  test("while hidden, lastActiveAt is only ever a UTC midnight", async () => {
+    const fs = db(ALICE);
+    // Turning it on must rewrite the precise heartbeat in the same write.
+    await assertFails(updateDoc(doc(fs, "users/alice"), { hideActivity: true }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideActivity: true, lastActiveAt: midnight() }));
+    // Today's midnight again (once a day) is fine; the time of day is not.
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { lastActiveAt: midnight() }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { lastActiveAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { lastActiveAt: inMinutes(-5) }));
+    // Other edits carry on while hidden.
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { bio: "still here" }));
+    // Turning it back on resumes the precise heartbeat.
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideActivity: false, lastActiveAt: serverTimestamp() }));
+  });
+});
+
+describe("Spotlight: once per UTC day, at most 30 minutes", () => {
+  const today = () => new Date().toISOString().slice(0, 10);
+  const yesterday = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const inMinutes = (m) => Timestamp.fromMillis(Date.now() + m * 60_000);
+
+  // The client's write: today's counter at its next step and spotlightUntil, in one batch.
+  function startSpotlight(uid, { until = inMinutes(29), counter = 1, day = today(), extra = {} } = {}) {
+    const fs = db(uid);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `users/${uid}/limits/spotlight_${day}`), { spotlights: counter, ...extra });
+    batch.update(doc(fs, `users/${uid}`), { spotlightUntil: until });
+    return batch.commit();
+  }
+
+  test("a boost with today's counter goes through", async () => {
+    await assertSucceeds(startSpotlight(ALICE));
+    const snap = await assertSucceeds(getDoc(doc(db(ALICE), `users/alice/limits/spotlight_${today()}`)));
+    if (snap.data().spotlights !== 1) throw new Error("counter not at 1");
+  });
+
+  test("only one a day: the counter can't be reused or raised", async () => {
+    await assertSucceeds(startSpotlight(ALICE));
+    await assertSucceeds(updateDoc(doc(db(ALICE), "users/alice"), { spotlightUntil: null }));
+    await assertFails(startSpotlight(ALICE, { counter: 1 }));
+    await assertFails(startSpotlight(ALICE, { counter: 2 }));
+    // Without touching the counter at all.
+    await assertFails(updateDoc(doc(db(ALICE), "users/alice"), { spotlightUntil: inMinutes(20) }));
+    // Nobody resets it.
+    await assertFails(deleteDoc(doc(db(ALICE), `users/alice/limits/spotlight_${today()}`)));
+    // It's per user.
+    await assertSucceeds(startSpotlight(BOB));
+  });
+
+  test("at most 30 minutes, a timestamp, and not on a new profile", async () => {
+    await assertFails(startSpotlight(ALICE, { until: inMinutes(45) }));
+    await assertFails(startSpotlight(ALICE, { until: "soon" }));
+    // Already over: there's nothing to start.
+    await assertFails(startSpotlight(ALICE, { until: inMinutes(-1) }));
+    const fs = db("newbie");
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/newbie/private/account"), { ...adultBirth, termsVersion: "2026-10", termsAcceptedAt: serverTimestamp() });
+    batch.set(doc(fs, "users/newbie"), { uid: "newbie", age: adultAge, onboarded: false, spotlightUntil: inMinutes(10) });
+    await assertFails(batch.commit());
+  });
+
+  test("the counter only moves with a boost, only today's, only its own field", async () => {
+    await assertFails(setDoc(doc(db(ALICE), `users/alice/limits/spotlight_${today()}`), { spotlights: 1 }));
+    await assertFails(startSpotlight(ALICE, { day: yesterday() }));
+    await assertFails(startSpotlight(ALICE, { extra: { reports: 3 } }));
+    await assertFails(startSpotlight(ALICE, { counter: 0 }));
+    // Nobody writes someone else's counter or profile.
+    const eve = db(EVE);
+    const batch = writeBatch(eve);
+    batch.set(doc(eve, `users/alice/limits/spotlight_${today()}`), { spotlights: 1 });
+    batch.update(doc(eve, "users/alice"), { spotlightUntil: inMinutes(20) });
+    await assertFails(batch.commit());
+    // Owner-only reads, like the report counter.
+    await assertSucceeds(startSpotlight(ALICE));
+    await assertFails(getDoc(doc(db(EVE), `users/alice/limits/spotlight_${today()}`)));
+  });
+
+  test("turning it off is always allowed, and other edits carry on while it runs", async () => {
+    await assertSucceeds(startSpotlight(ALICE));
+    await assertSucceeds(updateDoc(doc(db(ALICE), "users/alice"), { bio: "boosted" }));
+    await assertSucceeds(updateDoc(doc(db(ALICE), "users/alice"), { spotlightUntil: deleteField() }));
+  });
+
+  test("the report counter still works next to it", async () => {
+    await assertSucceeds(startSpotlight(ALICE));
+    const fs = db(ALICE);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `users/alice/limits/${today()}`), { reports: 1 });
+    batch.set(doc(fs, `reports/alice_${today()}_1`), {
+      reporterId: ALICE, targetId: EVE, reason: "spam_scam", details: "", matchId: null, createdAt: serverTimestamp(), status: "open",
+    });
+    await assertSucceeds(batch.commit());
+    // And a Spotlight step can't be taken on the report counter.
+    const sneaky = writeBatch(fs);
+    sneaky.set(doc(fs, `users/alice/limits/${today()}`), { spotlights: 1 });
+    sneaky.update(doc(fs, "users/alice"), { spotlightUntil: inMinutes(20) });
+    await assertFails(sneaky.commit());
+  });
+});
+
+describe("like notes on prompts and photos", () => {
+  const note = (extra = {}) => ({ kind: "prompt", ref: "p_flirt_style", text: "Okay, this made me laugh.", ...extra });
+  const like = (n) => ({ createdAt: serverTimestamp(), super: false, note: n });
+
+  test("a like may carry one well-formed note", async () => {
+    const fs = db(EVE);
+    await assertSucceeds(setDoc(doc(fs, "users/alice/likedBy/eve"), like(note())));
+    await assertSucceeds(setDoc(doc(fs, "users/bob/likedBy/eve"), like(note({ kind: "photo", ref: "4b0c6f1e-2a7d-4c52-9a51-0d3b7f2e9c11", text: "" }))));
+    await assertSucceeds(setDoc(doc(fs, `users/${DEMO}/likedBy/eve`), like(note({ text: "x".repeat(140) }))));
+    // Only the liked person reads it, as before.
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice/likedBy/eve")));
+    await assertFails(getDoc(doc(db(EVE), "users/alice/likedBy/eve")));
+  });
+
+  test("notes are strict", async () => {
+    const fs = db(EVE);
+    const bad = [
+      note({ text: "x".repeat(141) }),
+      note({ kind: "bio" }),
+      note({ ref: "" }),
+      note({ ref: "https://example.com/a.jpg" }),
+      note({ ref: "x".repeat(129) }),
+      note({ text: 42 }),
+      note({ extra: true }),
+      { kind: "prompt", ref: "p_flirt_style" },
+      "nice prompt",
+      null,
+    ];
+    for (const n of bad) await assertFails(setDoc(doc(fs, "users/alice/likedBy/eve"), like(n)));
+    await assertFails(setDoc(doc(fs, "users/alice/likedBy/eve"), { createdAt: serverTimestamp(), super: false, comment: "hi" }));
+  });
+
+  test("my own swipe keeps a copy; a nope never carries one", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(setDoc(doc(fs, "users/alice/swipes/eve"), { direction: "like", createdAt: serverTimestamp(), note: note() }));
+    await assertSucceeds(setDoc(doc(fs, "users/alice/swipes/bob"), { direction: "super", createdAt: serverTimestamp(), note: note({ kind: "photo", ref: "bob-0" }) }));
+    await assertFails(setDoc(doc(fs, `users/alice/swipes/${DEMO}`), { direction: "nope", createdAt: serverTimestamp(), note: note() }));
+    await assertFails(setDoc(doc(fs, `users/alice/swipes/${DEMO}`), { direction: "like", createdAt: serverTimestamp(), note: note({ text: "x".repeat(141) }) }));
+    await assertSucceeds(getDoc(doc(fs, "users/alice/swipes/eve")));
+  });
+
+  test("a noted like still makes the match, and the note opens the chat as the liker", async () => {
+    await seed((s) => setDoc(doc(s, "users/eve/likedBy/alice"), { createdAt: new Date(), super: false }));
+    const fs = db(EVE);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/eve/swipes/alice"), { direction: "like", createdAt: serverTimestamp(), note: note() });
+    batch.set(doc(fs, "users/alice/likedBy/eve"), like(note()));
+    batch.set(doc(fs, "matches/alice_eve"), {
+      users: [ALICE, EVE], profiles: {}, createdAt: serverTimestamp(), superLike: false, isDemo: false, lastMessage: null, lastRead: {},
+    });
+    await assertSucceeds(batch.commit());
+    // Eve's first message quotes Alice's prompt; the quote's sender is Alice (a match participant).
+    const first = writeBatch(fs);
+    first.set(doc(fs, "matches/alice_eve/messages/n1"), {
+      senderId: EVE, type: "text", text: "Okay, this made me laugh.", imageId: null, imageBlurhash: null, game: null, createdAt: serverTimestamp(),
+      replyTo: { id: "profile-prompt-p_flirt_style", senderId: ALICE, text: "My flirting style is: eye contact and bad puns", type: "text" },
+    });
+    first.update(doc(fs, "matches/alice_eve"), { lastMessage: { text: "Okay, this made me laugh.", senderId: EVE, type: "text", sentAt: serverTimestamp() } });
+    await assertSucceeds(first.commit());
+    // Never as the person who was liked.
+    await assertFails(setDoc(doc(fs, "matches/alice_eve/messages/n2"), {
+      senderId: ALICE, type: "text", text: "spoofed", imageId: null, imageBlurhash: null, game: null, createdAt: serverTimestamp(),
+    }));
+  });
+});

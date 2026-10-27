@@ -49,6 +49,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
                 maxAge = p[MAX_AGE] ?: 45,
                 lookingFor = p[LOOKING_FOR].orEmpty().mapNotNull { key -> LookingFor.entries.firstOrNull { it.key == key } }.toSet(),
                 freeTonightOnly = p[FREE_TONIGHT_ONLY] ?: false,
+                onlineOnly = p[ONLINE_ONLY] ?: false,
                 browseFrom = p[TRAVEL_NAME]?.let { name ->
                     val lat = p[TRAVEL_LAT]
                     val lng = p[TRAVEL_LNG]
@@ -72,6 +73,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         it[MAX_AGE] = filters.maxAge
         it[LOOKING_FOR] = filters.lookingFor.map(LookingFor::key).toSet()
         it[FREE_TONIGHT_ONLY] = filters.freeTonightOnly
+        it[ONLINE_ONLY] = filters.onlineOnly
         val travel = filters.browseFrom
         if (travel == null) {
             it.remove(TRAVEL_NAME)
@@ -160,6 +162,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val MAX_AGE = intPreferencesKey("filter_max_age")
         val LOOKING_FOR = stringSetPreferencesKey("filter_looking_for")
         val FREE_TONIGHT_ONLY = booleanPreferencesKey("filter_free_tonight_only")
+        val ONLINE_ONLY = booleanPreferencesKey("filter_online_only")
         val TRAVEL_NAME = stringPreferencesKey("travel_city")
         val TRAVEL_LAT = doublePreferencesKey("travel_lat")
         val TRAVEL_LNG = doublePreferencesKey("travel_lng")

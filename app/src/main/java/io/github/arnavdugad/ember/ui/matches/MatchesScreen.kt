@@ -73,6 +73,7 @@ import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
+import io.github.arnavdugad.ember.core.designsystem.OnlineDot
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.ScreenTitle
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
@@ -81,14 +82,23 @@ import io.github.arnavdugad.ember.core.designsystem.shimmer
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MessageType
+import io.github.arnavdugad.ember.data.model.Presence
+import io.github.arnavdugad.ember.data.repo.LikeNoteCourier
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import io.github.arnavdugad.ember.ui.main.BottomBarSpace
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -99,14 +109,45 @@ import javax.inject.Inject
 @HiltViewModel
 class MatchesViewModel @Inject constructor(
     matches: MatchRepository,
+    private val profiles: ProfileRepository,
     private val settings: SettingsRepository,
     private val unmatches: UnmatchQueue,
+    likeNotes: LikeNoteCourier,
 ) : ViewModel() {
     /** Null while the first snapshot loads. Matches waiting out their Undo window are already gone. */
     val matches: StateFlow<List<Match>?> = combine(matches.observeMatches().catch { emit(emptyList()) }, unmatches.pending) { list, pending ->
         val leaving = pending.mapTo(HashSet()) { it.matchId }
         list.filterNot { it.id in leaving }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Who among my matches is online now, refreshed every heartbeat while this list is on screen.
+     * Empty while I hide my own activity (then I don't see anyone's).
+     */
+    val online: StateFlow<Set<String>> = combine(
+        this.matches.map { list -> list.orEmpty().map { it.otherUid }.toSet() }.distinctUntilChanged(),
+        profiles.observeMyProfile().map { it?.hideActivity == true }.catch { emit(false) }.distinctUntilChanged(),
+    ) { uids, hidden -> if (hidden) emptySet() else uids }
+        .flatMapLatest { uids ->
+            if (uids.isEmpty()) {
+                flowOf(emptySet())
+            } else {
+                flow {
+                    while (true) {
+                        val seen = runCatching { profiles.lastActive(uids) }.getOrDefault(emptyMap())
+                        val now = Instant.now()
+                        emit(seen.filterValues { Presence.isOnline(it, now) }.keys)
+                        delay(Presence.HEARTBEAT.toMillis())
+                    }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    init {
+        // Lives with the main screen, so a note on my like reaches the chat even if they matched me.
+        viewModelScope.launch { this@MatchesViewModel.matches.filterNotNull().collect { likeNotes.deliverPending(it) } }
+    }
 
     /** Archived conversations: a device-local list, the other person is never told. */
     val archived: StateFlow<Set<String>> = settings.archivedMatches
@@ -135,6 +176,7 @@ class MatchesViewModel @Inject constructor(
 fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
     val matches by viewModel.matches.collectAsStateWithLifecycle()
     val archivedIds by viewModel.archived.collectAsStateWithLifecycle()
+    val online by viewModel.online.collectAsStateWithLifecycle()
     var archiveOpen by rememberSaveable { mutableStateOf(false) }
     val all = matches.orEmpty()
     val archived = all.filter { it.id in archivedIds }
@@ -157,7 +199,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
                         item(key = "freshHeader") { SectionHeader("New matches · ${fresh.size}", Modifier.padding(top = 12.dp)) }
                         item(key = "fresh") {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 4.dp)) {
-                                items(fresh, key = { it.id }) { match -> NewMatchBubble(match) { onOpenChat(match.id) } }
+                                items(fresh, key = { it.id }) { match -> NewMatchBubble(match, online = match.otherUid in online) { onOpenChat(match.id) } }
                             }
                         }
                     }
@@ -171,7 +213,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
                                 ),
                                 onClick = { onOpenChat(match.id) },
                                 modifier = Modifier.animateItem(),
-                            ) { ConversationRow(match) }
+                            ) { ConversationRow(match, online = match.otherUid in online) }
                         }
                     }
                     if (archived.isNotEmpty()) {
@@ -193,7 +235,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
                                     ),
                                     onClick = { onOpenChat(match.id) },
                                     modifier = Modifier.animateItem(),
-                                ) { ConversationRow(match) }
+                                ) { ConversationRow(match, online = match.otherUid in online) }
                             }
                         }
                     }
@@ -299,7 +341,7 @@ private fun ArchivedHeader(count: Int, unread: Boolean, open: Boolean, onToggle:
 }
 
 @Composable
-private fun NewMatchBubble(match: Match, onClick: () -> Unit) {
+private fun NewMatchBubble(match: Match, online: Boolean, onClick: () -> Unit) {
     val colors = EmberTheme.colors
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(78.dp).pressable(onClick = onClick)) {
         Box(contentAlignment = Alignment.BottomCenter) {
@@ -313,6 +355,7 @@ private fun NewMatchBubble(match: Match, onClick: () -> Unit) {
                 EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
             }
             Badge("NEW", Modifier.offset(y = 6.dp))
+            if (online) OnlineDot(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = 2.dp), size = 12.dp, ring = colors.background)
         }
         Spacer(Modifier.height(10.dp))
         Text(match.otherName, style = EmberTheme.type.caption, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -328,14 +371,17 @@ private fun Badge(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConversationRow(match: Match) {
+private fun ConversationRow(match: Match, online: Boolean) {
     val colors = EmberTheme.colors
     val last = match.lastMessage
     val theirTurn = last != null && last.senderId == match.otherUid
     GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.tile) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(54.dp).clip(CircleShape)) {
-                EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
+            Box {
+                Box(Modifier.size(54.dp).clip(CircleShape)) {
+                    EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
+                }
+                if (online) OnlineDot(Modifier.align(Alignment.BottomEnd).offset(x = 4.dp, y = 4.dp), size = 11.dp, ring = colors.surface)
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {

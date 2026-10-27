@@ -16,6 +16,8 @@ import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.LastMessage
+import io.github.arnavdugad.ember.data.model.LikeNote
+import io.github.arnavdugad.ember.data.model.LikeNoteKind
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Message
@@ -26,8 +28,10 @@ import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.Reactions
 import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.ReportReason
+import io.github.arnavdugad.ember.data.model.Spotlight
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.data.model.VoiceClip
+import io.github.arnavdugad.ember.data.model.spotlightFirst
 import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
@@ -36,6 +40,7 @@ import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
+import io.github.arnavdugad.ember.data.repo.SpotlightUsedException
 import io.github.arnavdugad.ember.data.repo.UnderageException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -86,6 +91,9 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     private val me = MutableStateFlow<Profile?>(null)
     private val myMatchOnly = MutableStateFlow<MatchOnlyDetails?>(null)
     private val swipes = LinkedHashMap<String, SwipeDirection>()
+
+    /** The prompt or photo notes my likes carried. */
+    private val notes = HashMap<String, LikeNote>()
     private val blocked = mutableSetOf<String>()
     private val matches = MutableStateFlow<Map<String, Match>>(emptyMap())
     private val messages = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
@@ -208,6 +216,21 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     override suspend fun touchLastActive() = Unit
 
+    override suspend fun lastActive(uids: Collection<String>): Map<String, Instant> =
+        uids.mapNotNull { uid -> peopleById[uid]?.profile?.takeUnless { it.hideActivity }?.lastActiveAt?.let { uid to it } }.toMap()
+
+    override suspend fun startSpotlight(): Instant {
+        delay(300)
+        val now = Instant.now()
+        if (spotlightUsedToday()) throw SpotlightUsedException()
+        val until = Spotlight.until(now)
+        persist { it.copy(spotlightUntil = until.toEpochMilli(), spotlightDay = Spotlight.counterId(now)) }
+        me.update { it?.copy(spotlightUntil = until) }
+        return until
+    }
+
+    override suspend fun spotlightUsedToday(): Boolean = stored?.spotlightDay == Spotlight.counterId(Instant.now())
+
     override suspend fun setFreeTonight(enabled: Boolean) {
         val until = if (enabled) Instant.now().plus(Duration.ofHours(6)) else null
         persist { it.copy(freeTonightUntil = until?.toEpochMilli()) }
@@ -239,15 +262,18 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
             .filter { filters.lookingFor.isEmpty() || it.lookingFor in filters.lookingFor }
             .filter { !afterDark || it.afterDark || it.lookingFor.isAdventurous }
             .filter { !filters.freeTonightOnly || it.isFreeTonight(now) }
+            .filter { !filters.onlineOnly || mine?.hideActivity == true || it.isOnline(now = now) }
             .filter { mine?.interestedIn.isNullOrEmpty() || it.gender in mine.interestedIn }
             .map { it.withDistanceFrom(origin) }
             .toList()
             .nearFirst(filters.maxDistanceKm, kotlin.random.Random(swipes.size))
             .take(40)
+            .spotlightFirst(now)
     }
 
-    override suspend fun swipe(target: Profile, direction: SwipeDirection): String? {
+    override suspend fun swipe(target: Profile, direction: SwipeDirection, note: LikeNote?): String? {
         swipes[target.uid] = direction
+        if (direction != SwipeDirection.Nope && note != null) notes[target.uid] = note else notes.remove(target.uid)
         val person = peopleById[target.uid] ?: return null
         if (direction == SwipeDirection.Nope || !person.likesBack) return null
         run {
@@ -274,22 +300,34 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
         return matchId(target.uid)
     }
 
+    override suspend fun myNote(targetUid: String): LikeNote? = notes[targetUid]
+
     override suspend fun rewind(targetUid: String): Boolean {
         if (matches.value.containsKey(matchId(targetUid))) return false
+        notes.remove(targetUid)
         return swipes.remove(targetUid) != null
     }
 
     /**
      * Five demo people who "like you": ones who like back, so liking them from the deck matches
-     * (and their tile unblurs). Picked once, preferring people you'd see in your deck.
+     * (and their tile unblurs). Picked once, preferring people you'd see in your deck. The first
+     * liked one of your prompts, so Likes you shows what a note looks like.
      */
     override fun observeLikesYou(): Flow<List<Admirer>> = matches.map {
         val wanted = me.value?.interestedIn.orEmpty()
+        val firstPrompt = me.value?.prompts?.firstOrNull()
         val admirers = likesYou ?: people
             .filter { it.likesBack && (wanted.isEmpty() || it.profile.gender in wanted) }
             .ifEmpty { people.filter { it.likesBack } }
             .take(5)
-            .mapIndexed { i, p -> Admirer(p.profile.uid, superLike = i == 1, likedAt = Instant.now().minus(Duration.ofHours(3L + i * 7L))) }
+            .mapIndexed { i, p ->
+                Admirer(
+                    p.profile.uid,
+                    superLike = i == 1,
+                    likedAt = Instant.now().minus(Duration.ofHours(3L + i * 7L)),
+                    note = if (i == 0 && firstPrompt != null) LikeNote.of(LikeNoteKind.Prompt, firstPrompt.id, "Okay, this one made me laugh out loud.") else null,
+                )
+            }
             .also { likesYou = it }
         admirers.filterNot { it.uid in blocked }
     }
@@ -429,6 +467,7 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
         me.value = null
         myMatchOnly.value = null
         swipes.clear()
+        notes.clear()
         blocked.clear()
         matches.value = emptyMap()
         messages.value = emptyMap()
@@ -450,6 +489,11 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     override suspend fun setPaused(paused: Boolean) {
         persist { it.copy(paused = paused) }
         me.update { it?.copy(paused = paused) }
+    }
+
+    override suspend fun setHideActivity(hide: Boolean) {
+        persist { it.copy(hideActivity = hide) }
+        me.update { it?.copy(hideActivity = hide) }
     }
 
     /** Preview keeps everything on the phone; the export is the saved profile plus this session's chats. */

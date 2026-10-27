@@ -45,6 +45,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,20 +65,26 @@ import io.github.arnavdugad.ember.core.designsystem.EmberFlame
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassBottomSheet
+import io.github.arnavdugad.ember.core.designsystem.GlassButton
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
+import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.designsystem.shimmer
+import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.core.image.rememberBlurHashPainter
 import io.github.arnavdugad.ember.data.model.Admirer
+import io.github.arnavdugad.ember.data.model.LikeNote
+import io.github.arnavdugad.ember.data.model.LikeNoteKind
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
+import io.github.arnavdugad.ember.ui.profile.likedWhat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,6 +124,10 @@ class LikesYouViewModel @Inject constructor(
     private val fetched = MutableStateFlow<Map<String, Profile?>>(emptyMap())
     private val requested = mutableSetOf<String>()
 
+    /** My own profile: a note names one of my prompts or photos by id. */
+    val me: StateFlow<Profile?> = profiles.observeMyProfile().catch { emit(null) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /** Null while loading. Admirers whose profile is gone (deleted account) are dropped. */
     val tiles: StateFlow<List<AdmirerTile>?> = combine(
         discovery.observeLikesYou().catch { emit(emptyList()) },
@@ -149,6 +163,7 @@ class LikesYouViewModel @Inject constructor(
 @Composable
 fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackToDeck: () -> Unit, viewModel: LikesYouViewModel = hiltViewModel()) {
     val tiles by viewModel.tiles.collectAsStateWithLifecycle()
+    val me by viewModel.me.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     val haptics = EmberTheme.haptics
     LaunchedEffect(viewModel) { viewModel.superLikeArrived.collect { haptics.heartbeat() } }
@@ -177,13 +192,15 @@ fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackTo
             when {
                 list == null -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(16.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
+                    userScrollEnabled = false,
+                    modifier = Modifier.semantics { contentDescription = "Loading the people who like you" },
                 ) {
-                    items(4) { Box(Modifier.fillMaxWidth().aspectRatio(0.75f).shimmer(EmberShapes.tile)) }
+                    items(6) { Box(Modifier.fillMaxWidth().aspectRatio(0.75f).shimmer(EmberShapes.tile)) }
                 }
-                list.isEmpty() -> EmptyLikes()
+                list.isEmpty() -> EmptyLikes(onBackToDeck)
                 else -> LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier.navigationBarsPadding(),
@@ -216,7 +233,7 @@ fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackTo
 
         GlassBottomSheet(visible = mysteryOpen, onDismiss = { mysteryOpen = false }) {
             mystery?.let { tile ->
-                MysterySheet(tile, onBackToDeck = {
+                MysterySheet(tile, me, onBackToDeck = {
                     mysteryOpen = false
                     onBackToDeck()
                 })
@@ -239,13 +256,24 @@ private fun AdmirerCard(tile: AdmirerTile, index: Int, onClick: () -> Unit) {
             clear.snapTo(0f)
         }
     }
+    val note = tile.admirer.note
+    val description = buildString {
+        append(if (tile.matched && profile != null) "${profile.name}, matched" else "Someone who likes you")
+        if (tile.admirer.superLike) append(", super like")
+        if (note != null) {
+            append(". ").append(likedWhat(note))
+            if (note.text.isNotBlank()) append(": ").append(note.text)
+        }
+    }
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(0.75f)
             .pressable(onClick = onClick, pressedScale = 0.96f)
             .clip(EmberShapes.tile)
-            .background(colors.surfaceHigh),
+            .background(colors.surfaceHigh)
+            // One clear description, and never the name of someone you haven't matched.
+            .clearAndSetSemantics { contentDescription = description },
     ) {
         if (profile == null) {
             Box(Modifier.fillMaxSize().shimmer(EmberShapes.tile))
@@ -254,16 +282,44 @@ private fun AdmirerCard(tile: AdmirerTile, index: Int, onClick: () -> Unit) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Brush.verticalGradient(0.5f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.7f))),
+                    .background(Brush.verticalGradient(0.45f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.72f))),
             )
-            Column(Modifier.align(Alignment.BottomStart).padding(12.dp).graphicsLayer { alpha = clear.value }) {
-                Text("${profile.name}, ${profile.age}", style = EmberTheme.type.titleSmall, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("Matched", style = EmberTheme.type.caption, color = Color.White.copy(alpha = 0.85f))
+            Column(Modifier.align(Alignment.BottomStart).padding(12.dp)) {
+                if (tile.matched) {
+                    Text(
+                        "${profile.name}, ${profile.age}",
+                        style = EmberTheme.type.titleSmall,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.graphicsLayer { alpha = clear.value },
+                    )
+                }
+                if (note != null) {
+                    // What they liked, and their comment: visible even while the face is frosted.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Favorite, contentDescription = null, tint = colors.like, modifier = Modifier.size(12.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(likedWhat(note), style = EmberTheme.type.caption, color = Color.White.copy(alpha = 0.9f), maxLines = 1)
+                    }
+                    if (note.text.isNotBlank()) {
+                        Text(
+                            "“${note.text}”",
+                            style = EmberTheme.type.bodySmall,
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                } else if (tile.matched) {
+                    Text("Matched", style = EmberTheme.type.caption, color = Color.White.copy(alpha = 0.85f), modifier = Modifier.graphicsLayer { alpha = clear.value })
+                }
             }
             if (clear.value < 1f) {
                 Icon(
                     Icons.Rounded.Favorite,
-                    contentDescription = "Someone who likes you",
+                    contentDescription = null,
                     tint = Color.White.copy(alpha = 0.9f * (1f - clear.value)),
                     modifier = Modifier.align(Alignment.Center).size(30.dp),
                 )
@@ -329,22 +385,35 @@ private fun FrostedPhoto(profile: Profile, clear: Float) {
 }
 
 @Composable
-private fun MysterySheet(tile: AdmirerTile, onBackToDeck: () -> Unit) {
+private fun MysterySheet(tile: AdmirerTile, me: Profile?, onBackToDeck: () -> Unit) {
     val colors = EmberTheme.colors
+    val note = tile.admirer.note
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(96.dp).clip(CircleShape)) {
             tile.profile?.let { FrostedPhoto(it, clear = 0f) }
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            if (tile.admirer.superLike) "Someone super liked you" else "Someone likes you",
+            when {
+                note != null -> "Someone ${likedWhat(note).replaceFirstChar { it.lowercase() }}"
+                tile.admirer.superLike -> "Someone super liked you"
+                else -> "Someone likes you"
+            },
             style = EmberTheme.type.headline,
             color = colors.textPrimary,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(8.dp))
+        if (note != null) {
+            Spacer(Modifier.height(14.dp))
+            LikedNoteCard(note, me)
+        }
+        Spacer(Modifier.height(12.dp))
         Text(
-            "Like them back from your deck and you'll match instantly. They're in there somewhere: keep swiping.",
+            if (note != null) {
+                "Like them back from your deck and you'll match instantly, with this as their first message."
+            } else {
+                "Like them back from your deck and you'll match instantly. They're in there somewhere: keep swiping."
+            },
             style = EmberTheme.type.bodySmall,
             color = colors.textSecondary,
             textAlign = TextAlign.Center,
@@ -358,19 +427,57 @@ private fun MysterySheet(tile: AdmirerTile, onBackToDeck: () -> Unit) {
     }
 }
 
+/**
+ * What they liked: my prompt (question and answer) or a thumbnail of my photo, then their comment.
+ * If I've since removed it, just the comment.
+ */
 @Composable
-private fun EmptyLikes() {
+private fun LikedNoteCard(note: LikeNote, me: Profile?) {
+    val colors = EmberTheme.colors
+    val prompt = if (note.kind == LikeNoteKind.Prompt) me?.prompts?.firstOrNull { it.id == note.ref } else null
+    val photo = if (note.kind == LikeNoteKind.Photo) me?.photos?.firstOrNull { it.id == note.ref } else null
+    GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.panel) {
+        Column(Modifier.padding(16.dp)) {
+            when {
+                prompt != null -> {
+                    Text(prompt.question, style = EmberTheme.type.label, color = colors.accent)
+                    Spacer(Modifier.height(4.dp))
+                    Text(prompt.answer, style = EmberTheme.type.bodySmall, color = colors.textSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+                photo != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    EmberImage(photo.url, photo.blurHash, contentDescription = "Your photo", modifier = Modifier.size(56.dp).clip(EmberShapes.small))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Your photo", style = EmberTheme.type.label, color = colors.accent)
+                }
+                else -> Text(likedWhat(note), style = EmberTheme.type.label, color = colors.accent)
+            }
+            if (note.text.isNotBlank()) {
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Rounded.Favorite, contentDescription = null, tint = colors.like, modifier = Modifier.padding(top = 3.dp).size(14.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("“${note.text}”", style = EmberTheme.type.body, color = colors.textPrimary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyLikes(onBackToDeck: () -> Unit) {
     val colors = EmberTheme.colors
     Column(Modifier.fillMaxWidth().padding(top = 96.dp, start = 32.dp, end = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         EmberFlame(size = 72.dp)
         Spacer(Modifier.height(18.dp))
-        Text("No likes yet", style = EmberTheme.type.title, color = colors.textPrimary)
+        Text("No likes yet", style = EmberTheme.type.title, color = colors.textPrimary, modifier = Modifier.semantics { heading() })
         Spacer(Modifier.height(6.dp))
         Text(
-            "When someone likes you, they'll appear here, frosted until you match.",
+            "When someone likes you, they'll appear here, frosted until you match. A great first photo and a prompt or two help.",
             style = EmberTheme.type.bodySmall,
             color = colors.textSecondary,
             textAlign = TextAlign.Center,
         )
+        Spacer(Modifier.height(22.dp))
+        GlassButton("Back to Discover", onClick = onBackToDeck)
     }
 }

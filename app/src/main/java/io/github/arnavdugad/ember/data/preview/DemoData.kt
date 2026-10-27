@@ -92,6 +92,23 @@ internal object DemoData {
         return if (random.nextInt(4) == 0) Instant.now().plus(Duration.ofMinutes(60L + random.nextInt(300))) else null
     }
 
+    /**
+     * When each demo person was "last active": about a third are online, the rest anywhere from
+     * minutes to days ago. Preview has no heartbeat, so it's fixed when the demo starts.
+     */
+    private fun lastActive(uid: String): Instant {
+        val random = Random(uid.hashCode() * 31 + 7)
+        val minutesAgo = when (random.nextInt(3)) {
+            0 -> random.nextInt(8).toLong()
+            1 -> 20L + random.nextInt(600)
+            else -> 720L + random.nextInt(5_000)
+        }
+        return Instant.now().minus(Duration.ofMinutes(minutesAgo))
+    }
+
+    /** The per-person extras that don't come from the written copy. */
+    private fun Profile.withLiveBits(): Profile = copy(freeTonightUntil = freeTonight(uid), lastActiveAt = lastActive(uid))
+
     const val PORTRAIT_BASE = "https://cdn.jsdelivr.net/gh/Arnav-Dugad/ember-android@main/firebase/seed/portraits/"
 
     private val womenNames = listOf(
@@ -147,7 +164,7 @@ internal object DemoData {
                 lng = p.lng,
             )
             val likesBack = random.nextInt(100) < 55
-            DemoPerson(profile.copy(freeTonightUntil = freeTonight(uid)), likesBack, matchOnly = MatchOnlyDetails(p.boundaries, p.turnOns))
+            DemoPerson(profile.withLiveBits(), likesBack, matchOnly = MatchOnlyDetails(p.boundaries, p.turnOns))
         }
     }
 
@@ -208,10 +225,9 @@ internal object DemoData {
                 privateAlbumCount = if (random.nextInt(3) == 0) 2 + random.nextInt(5) else 0,
                 isDemo = true,
                 onboarded = true,
-                freeTonightUntil = freeTonight(uid),
             )
             DemoPerson(
-                profile = profile,
+                profile = profile.withLiveBits(),
                 likesBack = random.nextInt(100) < 55,
                 matchOnly = MatchOnlyDetails(
                     boundaries = Catalog.boundaries.shuffled(random).take(2).map { it.key },

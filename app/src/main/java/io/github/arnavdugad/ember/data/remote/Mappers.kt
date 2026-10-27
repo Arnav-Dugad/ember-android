@@ -3,6 +3,8 @@ package io.github.arnavdugad.ember.data.remote
 import com.google.firebase.firestore.FieldValue
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.Gender
+import io.github.arnavdugad.ember.data.model.LikeNote
+import io.github.arnavdugad.ember.data.model.LikeNoteKind
 import io.github.arnavdugad.ember.data.model.LookingFor
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Photo
@@ -41,7 +43,18 @@ internal fun Map<*, *>.toProfile(uid: String): Profile = Profile(
     paused = bool("paused"),
     freeTonightUntil = instant("freeTonightUntil"),
     voiceDurationMs = int("voiceDurationMs")?.takeIf { it > 0 },
+    lastActiveAt = instant("lastActiveAt"),
+    hideActivity = bool("hideActivity"),
+    spotlightUntil = instant("spotlightUntil"),
 )
+
+/** A like's `note` map, as the rules shape it: `{kind, ref, text}`. Anything else reads as no note. */
+internal fun Map<*, *>.toLikeNote(): LikeNote? {
+    val kind = LikeNoteKind.of(str("kind")) ?: return null
+    return LikeNote.of(kind, str("ref") ?: return null, str("text").orEmpty())
+}
+
+internal fun LikeNote.toFirestore(): Map<String, Any> = mapOf("kind" to kind.key, "ref" to ref, "text" to text)
 
 internal fun Map<*, *>.toMatchOnly() = MatchOnlyDetails(boundaries = strings("boundaries"), turnOns = strings("turnOns"))
 

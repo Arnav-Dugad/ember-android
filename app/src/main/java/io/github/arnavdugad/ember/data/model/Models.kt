@@ -72,6 +72,12 @@ data class Profile(
     val freeTonightUntil: Instant? = null,
     /** Length of their voice intro, or null when they haven't recorded one. */
     val voiceDurationMs: Int? = null,
+    /** Last heartbeat. Only ever a UTC midnight (the day, nothing finer) while [hideActivity] is on. */
+    val lastActiveAt: Instant? = null,
+    /** Privacy: don't show "Active now" or "Active 2h ago" to anyone. */
+    val hideActivity: Boolean = false,
+    /** Spotlight: shown first in everyone's deck until this moment; null or past means not. */
+    val spotlightUntil: Instant? = null,
 ) {
     val firstPhoto: Photo? get() = photos.firstOrNull()
 
@@ -81,6 +87,16 @@ data class Profile(
     val hasVoice: Boolean get() = voiceDurationMs != null
 
     fun isFreeTonight(now: Instant = Instant.now()): Boolean = freeTonightUntil?.isAfter(now) == true
+
+    fun isSpotlit(now: Instant = Instant.now()): Boolean = spotlightUntil?.isAfter(now) == true
+
+    /** Online now, as far as [viewerHidesActivity] may see: hiding your own activity hides everyone's. */
+    fun isOnline(viewerHidesActivity: Boolean = false, now: Instant = Instant.now()): Boolean =
+        !hideActivity && !viewerHidesActivity && Presence.isOnline(lastActiveAt, now)
+
+    /** "Active now" or "Active 2h ago"; null when either side hides activity, or it was long ago. */
+    fun activityLabel(viewerHidesActivity: Boolean = false, now: Instant = Instant.now()): String? =
+        if (hideActivity || viewerHidesActivity) null else Presence.label(lastActiveAt, now)
 }
 
 /** A named point at city precision (two decimals), from the city picker or travel mode. */
@@ -89,7 +105,65 @@ data class Place(val name: String, val lat: Double, val lng: Double)
 
 /** Someone who liked you ("Likes you"). Their profile is fetched separately by id. */
 @Immutable
-data class Admirer(val uid: String, val superLike: Boolean, val likedAt: Instant?)
+data class Admirer(val uid: String, val superLike: Boolean, val likedAt: Instant?, val note: LikeNote? = null)
+
+enum class LikeNoteKind(val key: String) {
+    Prompt("prompt"),
+    Photo("photo"),
+    ;
+
+    companion object {
+        fun of(key: String?): LikeNoteKind? = entries.firstOrNull { it.key == key }
+    }
+}
+
+/**
+ * A like aimed at one prompt or photo, with an optional comment. It rides on the like itself
+ * (`swipes` and `likedBy`) and becomes the liker's first message once they match.
+ */
+@Immutable
+data class LikeNote(val kind: LikeNoteKind, val ref: String, val text: String) {
+    /** The first chat message: the comment, or a heart when there isn't one. */
+    val messageText: String get() = text.trim().ifEmpty { "❤️" }
+
+    /** Quotes [owner]'s prompt or photo in that message; null once it's gone from their profile. */
+    fun quote(owner: Profile): ReplyRef? = when (kind) {
+        LikeNoteKind.Prompt -> owner.prompts.firstOrNull { it.id == ref }?.let { p ->
+            ReplyRef("profile-prompt-$ref", owner.uid, excerpt("${p.question}: ${p.answer}", ReplyRef.MAX_TEXT), MessageType.Text)
+        }
+        LikeNoteKind.Photo -> owner.photos.firstOrNull { it.id == ref }?.let { ReplyRef("profile-photo-$ref", owner.uid, "Photo", MessageType.Image) }
+    }
+
+    /** One string, for a navigation result. */
+    fun encode(): String = listOf(kind.key, ref, text).joinToString(SEPARATOR)
+
+    companion object {
+        /** The rules cap the comment at 140 chars. */
+        const val MAX_TEXT = 140
+
+        /** Prompt and photo ids are short tokens; the rules check the same pattern. */
+        private val REF = Regex("^[A-Za-z0-9_-]{1,128}$")
+        private const val SEPARATOR = "\u001F"
+
+        fun isValidRef(ref: String): Boolean = REF.matches(ref)
+
+        /** A note the rules will accept, or null. The comment is trimmed and cut to [MAX_TEXT]. */
+        fun of(kind: LikeNoteKind, ref: String, text: String): LikeNote? =
+            if (isValidRef(ref)) LikeNote(kind, ref, excerpt(text.trim(), MAX_TEXT)) else null
+
+        fun decode(encoded: String?): LikeNote? {
+            val parts = encoded?.split(SEPARATOR, limit = 3)?.takeIf { it.size == 3 } ?: return null
+            return LikeNoteKind.of(parts[0])?.let { of(it, parts[1], parts[2]) }
+        }
+
+        /** At most [max] chars, never cutting an emoji (a surrogate pair) in half. */
+        internal fun excerpt(text: String, max: Int): String {
+            if (text.length <= max) return text
+            val cut = text.take(max)
+            return if (cut.last().isHighSurrogate()) cut.dropLast(1) else cut
+        }
+    }
+}
 
 /** Boundaries and turn-ons: only ever shown to people you've matched with. */
 @Immutable
@@ -280,6 +354,8 @@ data class DiscoveryFilters(
     val maxAge: Int = 45,
     val lookingFor: Set<LookingFor> = emptySet(),
     val freeTonightOnly: Boolean = false,
+    /** Only people active in the last few minutes. Ignored while you hide your own activity. */
+    val onlineOnly: Boolean = false,
     /** Travel mode: distances and nearby-first ordering start here instead of at your city. */
     val browseFrom: Place? = null,
 )

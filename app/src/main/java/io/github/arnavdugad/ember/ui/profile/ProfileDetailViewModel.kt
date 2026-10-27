@@ -36,6 +36,9 @@ data class ProfileDetailState(
     val message: String? = null,
     /** Set after block/unmatch: the screen should close. */
     val removed: Boolean = false,
+    /** I hide my own activity, so I don't see anyone else's either. */
+    val viewerHidesActivity: Boolean = false,
+    val myUid: String? = null,
 )
 
 @HiltViewModel(assistedFactory = ProfileDetailViewModel.Factory::class)
@@ -75,6 +78,11 @@ class ProfileDetailViewModel @AssistedInject constructor(
                     val details = runCatching { profiles.getMatchOnly(uid) }.getOrNull()
                     _state.update { it.copy(matchOnly = details) }
                 }
+            }
+        }
+        viewModelScope.launch {
+            profiles.observeMyProfile().catch { emit(null) }.collect { me ->
+                _state.update { it.copy(viewerHidesActivity = me?.hideActivity == true, myUid = me?.uid) }
             }
         }
         viewModelScope.launch {

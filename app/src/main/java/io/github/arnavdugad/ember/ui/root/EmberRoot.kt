@@ -7,26 +7,41 @@ import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
@@ -38,8 +53,11 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.arnavdugad.ember.core.designsystem.AmbientGlow
 import io.github.arnavdugad.ember.core.designsystem.EmberFlame
+import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
+import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
+import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.Palette
 import io.github.arnavdugad.ember.data.settings.ThemeMode
 import io.github.arnavdugad.ember.ui.auth.AuthFlow
@@ -48,6 +66,7 @@ import io.github.arnavdugad.ember.ui.onboarding.AgeGateScreen
 import io.github.arnavdugad.ember.ui.onboarding.ProfileSetupScreen
 import io.github.arnavdugad.ember.update.UpdateSheet
 import io.github.arnavdugad.ember.update.UpdateViewModel
+import kotlinx.coroutines.delay
 
 @Composable
 fun EmberRoot(viewModel: RootViewModel = hiltViewModel()) {
@@ -58,6 +77,7 @@ fun EmberRoot(viewModel: RootViewModel = hiltViewModel()) {
     val launch by updates.launch.collectAsStateWithLifecycle()
     val deepLinks = viewModel.deepLinks
     val pendingLink by deepLinks.pending.collectAsStateWithLifecycle()
+    val notice by viewModel.notice.collectAsStateWithLifecycle()
 
     val systemDark = isSystemInDarkTheme()
     val palette = when {
@@ -113,12 +133,47 @@ fun EmberRoot(viewModel: RootViewModel = hiltViewModel()) {
                 }
             },
         ) {
+            DeletedNotice(
+                text = notice.takeIf { state.session == Session.SignedOut },
+                onShown = viewModel::consumeNotice,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
             UpdateSheet(
                 state = updateState,
                 onUpdate = updates::startUpdate,
                 onRemindLater = updates::remindLater,
                 onGrantPermission = updates::openInstallPermission,
             )
+        }
+    }
+}
+
+/**
+ * A short glass confirmation at the top of the welcome screen ("Account deleted"). It stays a few
+ * seconds, then [onShown] clears it; the last text is kept while it fades out.
+ */
+@Composable
+private fun DeletedNotice(text: String?, onShown: () -> Unit, modifier: Modifier = Modifier) {
+    var shown by remember { mutableStateOf("") }
+    if (text != null) shown = text
+    LaunchedEffect(text) {
+        if (text != null) {
+            delay(if (text.length > 40) 6_000 else 3_000)
+            onShown()
+        }
+    }
+    AnimatedVisibility(
+        visible = text != null,
+        enter = fadeIn() + slideInVertically { -it / 2 },
+        exit = fadeOut() + slideOutVertically { -it / 2 },
+        modifier = modifier.statusBarsPadding().padding(top = 16.dp, start = 24.dp, end = 24.dp),
+    ) {
+        GlassSurface(shape = EmberShapes.tile, style = GlassDefaults.chrome(), elevated = true, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = EmberTheme.colors.like, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(shown, style = EmberTheme.type.bodySmall, color = EmberTheme.colors.textPrimary)
+            }
         }
     }
 }

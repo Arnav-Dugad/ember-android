@@ -11,10 +11,12 @@ import io.github.arnavdugad.ember.data.location.CitySuggestion
 import io.github.arnavdugad.ember.data.location.LocationRepository
 import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
+import io.github.arnavdugad.ember.data.model.LikeNote
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
+import io.github.arnavdugad.ember.data.repo.LikeNoteCourier
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.settings.SettingsRepository
@@ -77,6 +79,7 @@ class DiscoverViewModel @Inject constructor(
     private val location: LocationRepository,
     private val palette: PaletteExtractor,
     private val analytics: Analytics,
+    private val likeNotes: LikeNoteCourier,
     aiSettings: AiSettingsRepository,
 ) : ViewModel() {
     /** Who answers for demo profiles, for the match screen's note. */
@@ -181,7 +184,7 @@ class DiscoverViewModel @Inject constructor(
         }
     }
 
-    fun onSwiped(profile: Profile, direction: SwipeDirection) {
+    fun onSwiped(profile: Profile, direction: SwipeDirection, note: LikeNote? = null) {
         swipedThisSession += profile.uid
         _state.update { s ->
             s.copy(
@@ -192,9 +195,9 @@ class DiscoverViewModel @Inject constructor(
         }
         if (direction != SwipeDirection.Nope) recentLikes[profile.uid] = profile
         if (direction == SwipeDirection.Super) mySuperLikes += profile.uid
-        analytics.log("swipe", "direction" to direction.key)
+        analytics.log("swipe", "direction" to direction.key, "note" to (note?.kind?.key ?: "none"))
         viewModelScope.launch {
-            val result = runCatching { discovery.swipe(profile, direction) }
+            val result = runCatching { discovery.swipe(profile, direction, note) }
             result.onFailure { e ->
                 // Put the card back rather than silently losing a like.
                 swipedThisSession -= profile.uid
@@ -202,6 +205,8 @@ class DiscoverViewModel @Inject constructor(
             }
             // The like itself reports the match, so the celebration never depends on a listener.
             result.getOrNull()?.let { matchId ->
+                // My prompt or photo note opens the chat, quoting what I liked.
+                if (note != null) launch { likeNotes.deliver(matchId, profile, note) }
                 celebrate(
                     Match(
                         id = matchId,
@@ -225,13 +230,19 @@ class DiscoverViewModel @Inject constructor(
     }
 
     /** From the full profile's like/nope buttons (a deck card or one of today's picks). */
-    fun swipeByUid(uid: String, direction: SwipeDirection) {
+    fun swipeByUid(uid: String, direction: SwipeDirection, note: LikeNote? = null) {
         val s = _state.value
         val profile = s.deck.firstOrNull { it.uid == uid }
             ?: s.picks.firstOrNull { it.profile.uid == uid }?.profile
             ?: pool.firstOrNull { it.uid == uid && it.uid !in swipedThisSession }
             ?: return
-        onSwiped(profile, direction)
+        onSwiped(profile, direction, note)
+    }
+
+    /** The "Online now" chip. */
+    fun setOnlineOnly(enabled: Boolean) {
+        applyFilters(_state.value.filters.copy(onlineOnly = enabled))
+        analytics.log("online_only", "on" to enabled)
     }
 
     fun rewind() {

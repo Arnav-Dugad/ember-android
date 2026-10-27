@@ -60,6 +60,7 @@ import io.github.arnavdugad.ember.core.designsystem.LocalOverlayCount
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
+import io.github.arnavdugad.ember.data.model.LikeNote
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.album.AlbumViewerScreen
 import io.github.arnavdugad.ember.ui.album.MyAlbumScreen
@@ -112,6 +113,9 @@ import kotlinx.serialization.Serializable
 val BottomBarSpace = 96.dp
 
 private const val DECK_ACTION = "deckAction"
+
+/** A prompt or photo note riding on the deck action ([LikeNote.encode]). */
+private const val DECK_NOTE = "deckNote"
 
 val LocalSharedScope = staticCompositionLocalOf<SharedTransitionScope?> { null }
 val LocalNavScope = staticCompositionLocalOf<AnimatedVisibilityScope?> { null }
@@ -185,8 +189,10 @@ fun MainScaffold(deepLinks: DeepLinks) {
                         val action by backStack.savedStateHandle.getStateFlow<String?>(DECK_ACTION, null).collectAsStateWithLifecycle()
                         LaunchedEffect(action) {
                             val parts = action?.split(':') ?: return@LaunchedEffect
-                            SwipeDirection.entries.firstOrNull { it.key == parts.getOrNull(1) }?.let { vm.swipeByUid(parts[0], it) }
+                            val note = LikeNote.decode(backStack.savedStateHandle.get<String>(DECK_NOTE))
+                            SwipeDirection.entries.firstOrNull { it.key == parts.getOrNull(1) }?.let { vm.swipeByUid(parts[0], it, note) }
                             backStack.savedStateHandle[DECK_ACTION] = null
+                            backStack.savedStateHandle[DECK_NOTE] = null
                         }
                         CompositionLocalProvider(LocalNavScope provides this) {
                             DiscoverScreen(
@@ -219,8 +225,12 @@ fun MainScaffold(deepLinks: DeepLinks) {
                                 initialPhoto = route.photoIndex,
                                 fromDeck = route.fromDeck,
                                 onBack = { nav.popBackStack() },
-                                onDeckAction = { dir ->
-                                    nav.previousBackStackEntry?.savedStateHandle?.set(DECK_ACTION, "${route.uid}:${dir.key}")
+                                onDeckAction = { dir, note ->
+                                    nav.previousBackStackEntry?.savedStateHandle?.let { handle ->
+                                        // The note first: the deck acts as soon as the action lands.
+                                        handle[DECK_NOTE] = note?.encode()
+                                        handle[DECK_ACTION] = "${route.uid}:${dir.key}"
+                                    }
                                     nav.popBackStack()
                                 },
                                 onOpenAlbum = { name -> nav.navigate(AlbumViewerRoute(route.uid, name)) },

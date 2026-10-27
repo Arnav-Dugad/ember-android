@@ -2,20 +2,28 @@ package io.github.arnavdugad.ember.data.remote
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.Blob
+import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.core.util.Geo
+import io.github.arnavdugad.ember.data.model.ActivityStamp
 import io.github.arnavdugad.ember.data.model.Ages
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Photo
+import io.github.arnavdugad.ember.data.model.Presence
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ProfileDraft
+import io.github.arnavdugad.ember.data.model.Spotlight
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
+import io.github.arnavdugad.ember.data.repo.SpotlightUsedException
 import io.github.arnavdugad.ember.data.repo.UnderageException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -55,6 +63,12 @@ class FirebaseProfileRepository @Inject constructor(
 
     @Volatile private var myLocation: Pair<Double, Double>? = null
 
+    /** The latest snapshot of my own profile, for the heartbeat's privacy check. */
+    @Volatile private var myProfile: Profile? = null
+
+    /** [SystemClock.elapsedRealtime] of this session's last heartbeat write. */
+    @Volatile private var lastTouch: Long? = null
+
     override fun observeMyProfile(): Flow<Profile?> = auth.uidFlow().flatMapLatest { uid ->
         if (uid == null) {
             flowOf(null)
@@ -64,7 +78,10 @@ class FirebaseProfileRepository @Inject constructor(
                 // server avoids flashing profile setup at someone who already has a profile.
                 .filter { snap -> snap == null || snap.exists() || !snap.metadata.isFromCache }
                 .map { snap ->
-                    snap?.data?.toProfile(uid)?.also { p -> if (p.lat != null && p.lng != null) myLocation = p.lat to p.lng }
+                    snap?.data?.toProfile(uid)?.also { p ->
+                        myProfile = p
+                        if (p.lat != null && p.lng != null) myLocation = p.lat to p.lng
+                    }
                 }
         }
     }
@@ -123,7 +140,9 @@ class FirebaseProfileRepository @Inject constructor(
     override suspend fun saveProfile(draft: ProfileDraft, finishOnboarding: Boolean) {
         val uid = auth.requireUid()
         val data = draft.toFirestore(uid).toMutableMap()
-        data["lastActiveAt"] = FieldValue.serverTimestamp()
+        // The deck query orders by lastActiveAt, so a profile needs one to be found at all.
+        val now = Instant.now()
+        data["lastActiveAt"] = if (hidesActivity(uid)) Timestamp(Presence.dayStart(now)) else FieldValue.serverTimestamp()
         if (finishOnboarding) data["onboarded"] = true
         users.document(uid).set(account.profileFields(data), SetOptions.merge()).await()
         matchOnlyRef(uid).set(mapOf("boundaries" to draft.matchOnly.boundaries, "turnOns" to draft.matchOnly.turnOns)).await()
@@ -158,13 +177,72 @@ class FirebaseProfileRepository @Inject constructor(
     override suspend fun getMatchOnly(uid: String): MatchOnlyDetails? =
         runCatching { matchOnlyRef(uid).get().await().data?.toMatchOnly() }.getOrNull()
 
-    /** Marks the user active and keeps their shown age current (it is checked by the rules). */
+    /**
+     * Marks the user active and keeps their shown age current (it is checked by the rules). Hidden
+     * activity writes only today's UTC midnight, once; the rules refuse anything finer.
+     */
     override suspend fun touchLastActive() {
         val uid = auth.currentUser?.uid ?: return
+        val mine = myProfile?.takeIf { it.uid == uid }
+        val sinceLastWrite = lastTouch?.let { Duration.ofMillis(SystemClock.elapsedRealtime() - it) }
+        val now = Instant.now()
+        val stamp = Presence.nextStamp(mine?.hideActivity ?: hidesActivity(uid), mine?.lastActiveAt, sinceLastWrite, now) ?: return
+        val value: Any = when (stamp) {
+            ActivityStamp.ServerTime -> FieldValue.serverTimestamp()
+            is ActivityStamp.At -> Timestamp(stamp.instant)
+        }
         runCatching {
-            users.document(uid).update(account.profileFields(mapOf("lastActiveAt" to FieldValue.serverTimestamp()))).await()
+            users.document(uid).update(account.profileFields(mapOf("lastActiveAt" to value))).await()
+            lastTouch = SystemClock.elapsedRealtime()
         }
     }
+
+    /** One `whereIn` read for up to 30 people; anyone hiding their activity is left out. */
+    override suspend fun lastActive(uids: Collection<String>): Map<String, Instant> {
+        val ids = uids.distinct().take(MAX_PRESENCE)
+        if (ids.isEmpty()) return emptyMap()
+        val docs = users.whereIn(FieldPath.documentId(), ids).limit(MAX_PRESENCE.toLong()).get().await().documents
+        return docs.mapNotNull { doc ->
+            val data = doc.data ?: return@mapNotNull null
+            if (data.bool("hideActivity")) return@mapNotNull null
+            data.instant("lastActiveAt")?.let { doc.id to it }
+        }.toMap()
+    }
+
+    /**
+     * Rules accept a Spotlight only in the same batch as today's counter doc
+     * (`users/{me}/limits/spotlight_{yyyy-MM-dd}`), which can be created once and never changed.
+     */
+    override suspend fun startSpotlight(): Instant {
+        val uid = auth.requireUid()
+        val now = Instant.now()
+        val counter = users.document(uid).collection("limits").document(Spotlight.counterId(now))
+        if (counter.get(Source.SERVER).await().exists()) throw SpotlightUsedException()
+        val until = Spotlight.until(now)
+        val batch = db.batch()
+        batch.set(counter, mapOf("spotlights" to 1))
+        batch.update(users.document(uid), account.profileFields(mapOf("spotlightUntil" to Timestamp(until))))
+        try {
+            batch.commit().await()
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) throw e
+            // Used on another device a moment ago, or the phone's clock disagrees with the server's.
+            if (counter.get(Source.SERVER).await().exists()) throw SpotlightUsedException()
+            throw IllegalStateException("Couldn't start Spotlight. Check that your phone's date and time are set automatically, then try again.")
+        }
+        return until
+    }
+
+    override suspend fun spotlightUsedToday(): Boolean {
+        val uid = auth.currentUser?.uid ?: return false
+        return users.document(uid).collection("limits").document(Spotlight.counterId(Instant.now())).get(Source.SERVER).await().exists()
+    }
+
+    /** From the live profile when it's loaded, else one read. */
+    private suspend fun hidesActivity(uid: String): Boolean =
+        myProfile?.takeIf { it.uid == uid }?.hideActivity
+            ?: runCatching { users.document(uid).get().await().getBoolean("hideActivity") }.getOrNull()
+            ?: false
 
     override suspend fun setFreeTonight(enabled: Boolean) {
         val uid = auth.requireUid()
@@ -216,5 +294,8 @@ class FirebaseProfileRepository @Inject constructor(
     private companion object {
         val FREE_TONIGHT: Duration = Duration.ofHours(6)
         const val MAX_VOICE_BYTES = 880 * 1024
+
+        /** Firestore's cap on `whereIn` values. */
+        const val MAX_PRESENCE = 30
     }
 }

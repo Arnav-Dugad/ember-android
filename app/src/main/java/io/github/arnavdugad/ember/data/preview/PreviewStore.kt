@@ -49,6 +49,10 @@ internal data class StoredProfile(
     val album: List<StoredPhoto> = emptyList(),
     val hideDistance: Boolean = false,
     val paused: Boolean = false,
+    val hideActivity: Boolean = false,
+    val spotlightUntil: Long? = null,
+    /** The UTC day (yyyy-MM-dd) of the last Spotlight: one a day, as with Firebase. */
+    val spotlightDay: String? = null,
 )
 
 /**
@@ -119,6 +123,8 @@ internal fun StoredProfile.toProfile(uid: String, albumCount: Int) = Profile(
     paused = paused,
     freeTonightUntil = freeTonightUntil?.let(Instant::ofEpochMilli),
     voiceDurationMs = voiceDurationMs,
+    hideActivity = hideActivity,
+    spotlightUntil = spotlightUntil?.let(Instant::ofEpochMilli),
 )
 
 internal fun StoredProfile.matchOnly() = MatchOnlyDetails(boundaries, turnOns)
