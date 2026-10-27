@@ -206,6 +206,7 @@ fun AboutSection(state: EditorState, vm: ProfileEditorViewModel) {
                 }
             }
         }
+        VoiceIntroSection(state, vm)
     }
 }
 

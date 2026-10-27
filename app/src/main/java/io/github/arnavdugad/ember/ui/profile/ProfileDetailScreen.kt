@@ -278,6 +278,7 @@ private fun ProfileBody(
                 profile.heightCm?.let { GlassTag("📏 ${formatHeight(it)}") }
                 profile.gender?.let { GlassTag(it.label) }
             }
+            VoiceIntroCard(profile)
             if (profile.bio.isNotBlank()) {
                 Section("About") { Text(profile.bio, style = EmberTheme.type.body, color = colors.textPrimary) }
             }

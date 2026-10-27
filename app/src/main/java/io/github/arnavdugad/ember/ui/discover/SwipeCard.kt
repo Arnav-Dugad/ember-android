@@ -79,6 +79,7 @@ import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.main.sharedPhoto
+import io.github.arnavdugad.ember.ui.profile.VoicePill
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
@@ -338,6 +339,8 @@ fun ProfileCard(
     modifier: Modifier = Modifier,
     stamps: @Composable () -> Unit = {},
     shared: Boolean = false,
+    /** The top card: its overlays (voice pill) are interactive. */
+    live: Boolean = shared,
 ) {
     val colors = EmberTheme.colors
     Box(
@@ -385,6 +388,7 @@ fun ProfileCard(
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.4f), Color.Transparent))),
         )
         PaginationBars(profile.photos.size, photoIndex, Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+        if (live) VoicePill(profile, Modifier.align(Alignment.TopEnd).padding(top = 26.dp, end = 14.dp))
         Column(
             Modifier
                 .align(Alignment.BottomStart)
