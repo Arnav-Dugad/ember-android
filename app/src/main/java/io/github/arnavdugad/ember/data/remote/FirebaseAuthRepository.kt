@@ -40,7 +40,7 @@ class FirebaseAuthRepository @Inject constructor(
         if (uid == null) {
             flowOf(null)
         } else {
-            account.accountRef(uid).snapshots()
+            account.accountRef(uid).snapshots(includeMetadata = true)
                 // A cold cache says "missing" before the server answers; wait for the server.
                 .filter { snap -> snap == null || snap.exists() || !snap.metadata.isFromCache }
                 .map { snap ->

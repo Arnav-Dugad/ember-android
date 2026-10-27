@@ -4,6 +4,7 @@ import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
 import kotlinx.coroutines.channels.awaitClose
@@ -14,9 +15,17 @@ import java.time.Instant
 /**
  * Snapshot listener as a Flow. Permission errors end the flow quietly with [onDenied] instead
  * of crashing: they're expected (e.g. an album whose access was just revoked).
+ *
+ * Callers that skip cache-only snapshots must pass [includeMetadata]: when the server agrees
+ * with the cache, Firestore reports that confirmation only as a metadata change, so without it
+ * a "wait for the server" filter would wait forever.
  */
-internal fun DocumentReference.snapshots(onDenied: (() -> DocumentSnapshot?)? = null): Flow<DocumentSnapshot?> = callbackFlow {
-    val registration = addSnapshotListener { snapshot, error ->
+internal fun DocumentReference.snapshots(
+    onDenied: (() -> DocumentSnapshot?)? = null,
+    includeMetadata: Boolean = false,
+): Flow<DocumentSnapshot?> = callbackFlow {
+    val changes = if (includeMetadata) MetadataChanges.INCLUDE else MetadataChanges.EXCLUDE
+    val registration = addSnapshotListener(changes) { snapshot, error ->
         if (error != null) {
             if (error.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
                 trySend(onDenied?.invoke())

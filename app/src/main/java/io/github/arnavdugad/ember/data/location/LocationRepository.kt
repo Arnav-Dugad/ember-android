@@ -57,6 +57,34 @@ class LocationRepository @Inject constructor(@ApplicationContext private val con
         return CityLocation(cityName(lat, lng) ?: "Near you", lat, lng)
     }
 
+    /** Approximate centre of a typed city name, rounded to city level. Null if unknown. */
+    suspend fun locate(city: String): CityLocation? {
+        if (city.isBlank() || !Geocoder.isPresent()) return null
+        val geocoder = Geocoder(context, Locale.getDefault())
+        val address: Address? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            withTimeoutOrNull(8_000) {
+                suspendCancellableCoroutine { cont ->
+                    geocoder.getFromLocationName(city, 1, object : Geocoder.GeocodeListener {
+                        override fun onGeocode(addresses: MutableList<Address>) {
+                            if (cont.isActive) cont.resume(addresses.firstOrNull())
+                        }
+
+                        override fun onError(errorMessage: String?) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    })
+                }
+            }
+        } else {
+            withContext(Dispatchers.IO) {
+                @Suppress("DEPRECATION")
+                runCatching { geocoder.getFromLocationName(city, 1)?.firstOrNull() }.getOrNull()
+            }
+        }
+        address ?: return null
+        return CityLocation(city.trim(), Geo.coarse(address.latitude), Geo.coarse(address.longitude))
+    }
+
     private suspend fun cityName(lat: Double, lng: Double): String? {
         if (!Geocoder.isPresent()) return null
         val geocoder = Geocoder(context, Locale.getDefault())

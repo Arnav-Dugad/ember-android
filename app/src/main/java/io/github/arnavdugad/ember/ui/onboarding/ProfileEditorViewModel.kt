@@ -141,7 +141,11 @@ class ProfileEditorViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(saving = true, error = null) }
             val result = runCatching {
-                val cleaned = draft.copy(prompts = draft.prompts.filter { it.answer.isNotBlank() })
+                var cleaned = draft.copy(prompts = draft.prompts.filter { it.answer.isNotBlank() })
+                // A typed city gets coordinates too, so distances and nearby-first ordering work.
+                if (cleaned.lat == null && cleaned.city.isNotBlank()) {
+                    location.locate(cleaned.city)?.let { cleaned = cleaned.copy(lat = it.lat, lng = it.lng) }
+                }
                 profiles.saveProfile(cleaned, finishOnboarding)
             }
             _state.update {

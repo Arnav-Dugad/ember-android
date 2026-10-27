@@ -52,7 +52,7 @@ class FirebaseProfileRepository @Inject constructor(
         if (uid == null) {
             flowOf(null)
         } else {
-            users.document(uid).snapshots()
+            users.document(uid).snapshots(includeMetadata = true)
                 // A cold cache reports "doesn't exist" before the server answers; waiting for the
                 // server avoids flashing profile setup at someone who already has a profile.
                 .filter { snap -> snap == null || snap.exists() || !snap.metadata.isFromCache }

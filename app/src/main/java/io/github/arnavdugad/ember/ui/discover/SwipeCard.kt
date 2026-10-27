@@ -393,20 +393,24 @@ fun ProfileCard(
                 .padding(start = 20.dp, end = 20.dp, top = 80.dp, bottom = 22.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "${profile.name}  ",
-                    style = EmberTheme.type.headline,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                Text("${profile.age}", style = EmberTheme.type.title.copy(fontWeight = EmberTheme.type.body.fontWeight), color = Color.White.copy(alpha = 0.9f))
-                if (profile.isDemo) {
-                    Spacer(Modifier.width(10.dp))
-                    DemoBadge()
+                // Name, age and badge share the space left of the info button; the name only
+                // truncates when it genuinely doesn't fit.
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${profile.name}  ",
+                        style = EmberTheme.type.headline,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Text("${profile.age}", style = EmberTheme.type.title.copy(fontWeight = EmberTheme.type.body.fontWeight), color = Color.White.copy(alpha = 0.9f))
+                    if (profile.isDemo) {
+                        Spacer(Modifier.width(10.dp))
+                        DemoBadge()
+                    }
                 }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 Box(
                     Modifier.size(40.dp).glass(CircleShape, GlassDefaults.overPhoto(), LocalHazeState.current),
                     contentAlignment = Alignment.Center,

@@ -29,7 +29,8 @@ const readJson = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
 
 const { values: args } = parseArgs({
   options: {
-    count: { type: "string", default: "150" },
+    // Default: every person in shared/people.json, or 150 generated profiles without it.
+    count: { type: "string" },
     "dry-run": { type: "boolean", default: false },
     wipe: { type: "boolean", default: false },
     "cli-auth": { type: "boolean", default: false },

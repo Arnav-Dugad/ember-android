@@ -228,7 +228,12 @@ class UpdateRepository @Inject constructor(
             .replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")
             .replace(MANDATORY, "")
             .lines()
-            .filterNot { it.trim().startsWith("sha256:") || it.trim().startsWith("versionCode:") }
+            // Machine lines, plus GitHub's auto-generated changelog header and compare link.
+            .filterNot { line ->
+                val t = line.trim()
+                t.startsWith("sha256:") || t.startsWith("versionCode:") || t.startsWith("**Full Changelog**") || t.startsWith("## What's Changed")
+            }
+            .map { it.replace("**", "") }
             .joinToString("\n")
             .replace(Regex("""\*\*\[Download.*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\n{3,}"), "\n\n")
