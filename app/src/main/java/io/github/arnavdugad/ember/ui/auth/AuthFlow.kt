@@ -15,7 +15,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import io.github.arnavdugad.ember.R
+import io.github.arnavdugad.ember.core.designsystem.PillShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
@@ -174,8 +184,7 @@ private fun Welcome(
                 textAlign = TextAlign.Center,
             )
         } else {
-            EmberButton(
-                "Continue with Google",
+            GoogleSignInButton(
                 onClick = { activity?.let(onGoogle) },
                 loading = state.loading,
                 modifier = Modifier.fillMaxWidth(),
@@ -192,6 +201,41 @@ private fun Welcome(
         )
     }
 }
+
+/**
+ * Google's own sign-in button (light variant, pill shape): white fill, #747775 outline, #1F1F1F
+ * Roboto Medium text and the unmodified four-colour "G". Google's branding rules don't allow the
+ * mark on a gradient, and a crisp white pill reads well over every Ember palette.
+ */
+@Composable
+private fun GoogleSignInButton(onClick: () -> Unit, loading: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .heightIn(min = 56.dp)
+            .pressable(onClick = onClick, enabled = !loading)
+            .background(Color.White, PillShape)
+            .border(1.dp, GoogleOutline, PillShape)
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(color = GoogleText, strokeWidth = 2.5.dp, modifier = Modifier.size(22.dp))
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(painterResource(R.drawable.ic_google_g), contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "Continue with Google",
+                    style = EmberTheme.type.label.copy(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium),
+                    color = GoogleText,
+                )
+            }
+        }
+    }
+}
+
+private val GoogleOutline = Color(0xFF747775)
+private val GoogleText = Color(0xFF1F1F1F)
 
 @Composable
 private fun AuthPage(title: String, subtitle: String, onBack: () -> Unit, content: @Composable () -> Unit) {
