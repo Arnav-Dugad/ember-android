@@ -95,18 +95,24 @@ import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import javax.inject.Inject
+import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 
 @HiltViewModel
 class MatchesViewModel @Inject constructor(
     matches: MatchRepository,
     private val settings: SettingsRepository,
     private val unmatches: UnmatchQueue,
+    ai: AiSettingsRepository,
 ) : ViewModel() {
     /** Null while the first snapshot loads. Matches waiting out their Undo window are already gone. */
     val matches: StateFlow<List<Match>?> = combine(matches.observeMatches().catch { emit(emptyList()) }, unmatches.pending) { list, pending ->
         val leaving = pending.mapTo(HashSet()) { it.matchId }
         list.filterNot { it.id in leaving }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** With AI chat in immersive mode, demo chats are listed like any other (no Demo badge). */
+    val hideDemo: StateFlow<Boolean> = ai.config.map { it.hidesDemo }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** Archived conversations: a device-local list, the other person is never told. */
     val archived: StateFlow<Set<String>> = settings.archivedMatches
@@ -135,6 +141,7 @@ class MatchesViewModel @Inject constructor(
 fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
     val matches by viewModel.matches.collectAsStateWithLifecycle()
     val archivedIds by viewModel.archived.collectAsStateWithLifecycle()
+    val hideDemo by viewModel.hideDemo.collectAsStateWithLifecycle()
     var archiveOpen by rememberSaveable { mutableStateOf(false) }
     val all = matches.orEmpty()
     val archived = all.filter { it.id in archivedIds }
@@ -171,7 +178,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
                                 ),
                                 onClick = { onOpenChat(match.id) },
                                 modifier = Modifier.animateItem(),
-                            ) { ConversationRow(match) }
+                            ) { ConversationRow(match, hideDemo) }
                         }
                     }
                     if (archived.isNotEmpty()) {
@@ -193,7 +200,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
                                     ),
                                     onClick = { onOpenChat(match.id) },
                                     modifier = Modifier.animateItem(),
-                                ) { ConversationRow(match) }
+                                ) { ConversationRow(match, hideDemo) }
                             }
                         }
                     }
@@ -328,7 +335,7 @@ private fun Badge(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConversationRow(match: Match) {
+private fun ConversationRow(match: Match, hideDemo: Boolean) {
     val colors = EmberTheme.colors
     val last = match.lastMessage
     val theirTurn = last != null && last.senderId == match.otherUid
@@ -348,7 +355,7 @@ private fun ConversationRow(match: Match) {
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    if (match.otherIsDemo) {
+                    if (match.otherIsDemo && !hideDemo) {
                         Spacer(Modifier.width(8.dp))
                         DemoBadge()
                     }

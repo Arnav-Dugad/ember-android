@@ -12,6 +12,7 @@ import dagger.hilt.components.SingletonComponent
 import io.github.arnavdugad.ember.data.ai.AiAwareSafetyRepository
 import io.github.arnavdugad.ember.data.ai.AiChatEngine
 import io.github.arnavdugad.ember.data.ai.AiChatStore
+import io.github.arnavdugad.ember.data.ai.AiCloudSync
 import io.github.arnavdugad.ember.data.ai.AiMatchRepository
 import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 import io.github.arnavdugad.ember.data.ai.BACKEND
@@ -97,7 +98,8 @@ object AppModule {
         preview: Provider<PreviewBackend>,
         store: AiChatStore,
         ai: AiSettingsRepository,
-    ): SafetyRepository = AiAwareSafetyRepository(if (mode == BackendMode.Firebase) firebase.get() else preview.get(), store, ai)
+        cloud: AiCloudSync,
+    ): SafetyRepository = AiAwareSafetyRepository(if (mode == BackendMode.Firebase) firebase.get() else preview.get(), store, ai, cloud)
 
     @Provides
     @Singleton

@@ -5,8 +5,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -14,6 +16,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -31,12 +34,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resumeWithException
 
-/** One turn of the conversation, from the persona's point of view: the user speaks, the persona answers. */
-data class AiTurn(val fromUser: Boolean, val text: String)
+/** A JPEG or PNG the model can look at, base64-encoded. */
+class AiImage(val mime: String, val base64: String)
+
+/** One turn of the conversation: the user's side or the model's, optionally with photos. */
+data class AiTurn(val fromUser: Boolean, val text: String, val images: List<AiImage> = emptyList())
+
+/** Tokens a request used, for the spend meter. */
+data class AiUsage(val inputTokens: Long = 0, val outputTokens: Long = 0)
+
+data class AiResult(val text: String, val usage: AiUsage)
 
 /** A failed AI request, with a message fit to show as-is. Never contains the API key. */
 class AiException(message: String, val kind: Kind) : Exception(message) {
-    enum class Kind { BadKey, NoCredit, RateLimited, Model, Declined, Busy, Network, Setup, Other }
+    enum class Kind { BadKey, NoCredit, RateLimited, Model, Declined, Busy, Network, Setup, Limit, Other }
 }
 
 /**
@@ -46,16 +57,26 @@ class AiException(message: String, val kind: Kind) : Exception(message) {
  */
 @Singleton
 class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
-    private val http = http.newBuilder().readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
+    private val http = http.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(150, TimeUnit.SECONDS).build()
 
-    /** The persona's reply to [turns] (which must end with the user's turn). */
-    suspend fun reply(credentials: AiCredentials, system: String, turns: List<AiTurn>): String = withContext(Dispatchers.IO) {
-        val text = when (credentials.provider) {
-            AiProvider.Claude -> claude(credentials, system, turns)
-            AiProvider.Gemini -> gemini(credentials, system, turns)
-            AiProvider.OpenAI, AiProvider.Compatible -> openAi(credentials, system, turns)
+    /**
+     * The model's answer to [turns] (which must start and end with the user's turn). With [jsonReply]
+     * the provider is asked for a JSON object where it supports that; the prompt must ask for JSON too.
+     */
+    suspend fun complete(
+        credentials: AiCredentials,
+        system: String,
+        turns: List<AiTurn>,
+        jsonReply: Boolean = false,
+        effort: String = "medium",
+    ): AiResult = withContext(Dispatchers.IO) {
+        val result = when (credentials.provider) {
+            AiProvider.Claude -> claude(credentials, system, turns, effort)
+            AiProvider.Gemini -> gemini(credentials, system, turns, jsonReply)
+            AiProvider.OpenAI, AiProvider.Compatible -> openAi(credentials, system, turns, jsonReply)
         }
-        text.trim().ifEmpty { throw AiException("No reply came back. Try again.", AiException.Kind.Other) }
+        if (result.text.isBlank()) throw AiException("No reply came back. Try again.", AiException.Kind.Other)
+        result
     }
 
     /** Model ids the key can use: also the cheapest way to check that a key works. */
@@ -79,7 +100,7 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
         }.sorted()
     }
 
-    private suspend fun claude(c: AiCredentials, system: String, turns: List<AiTurn>): String {
+    private suspend fun claude(c: AiCredentials, system: String, turns: List<AiTurn>, effort: String): AiResult {
         val fallbacks = c.model in CLAUDE_FALLBACK_MODELS
         val payload = buildJsonObject {
             put("model", c.model)
@@ -89,12 +110,27 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
                 turns.forEach { turn ->
                     addJsonObject {
                         put("role", if (turn.fromUser) "user" else "assistant")
-                        put("content", turn.text)
+                        if (turn.images.isEmpty()) {
+                            put("content", turn.text)
+                        } else {
+                            putJsonArray("content") {
+                                turn.images.forEach { image ->
+                                    addJsonObject {
+                                        put("type", "image")
+                                        putJsonObject("source") {
+                                            put("type", "base64")
+                                            put("media_type", image.mime)
+                                            put("data", image.base64)
+                                        }
+                                    }
+                                }
+                                text(turn.text)
+                            }
+                        }
                     }
                 }
             }
-            // Chat is light work: low effort keeps replies quick and cheap.
-            if (ModelPicker.claudeSupportsEffort(c.model)) putJsonObject("output_config") { put("effort", "low") }
+            if (ModelPicker.claudeSupportsEffort(c.model)) putJsonObject("output_config") { put("effort", effort) }
             // A safety decline re-runs on Anthropic's recommended fallback instead of failing.
             if (fallbacks) put("fallbacks", "default")
         }
@@ -104,8 +140,11 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
             .build()
         val body = execute(c, request)
         if (body.string("stop_reason") == "refusal") throw declined()
+        val usage = body["usage"] as? JsonObject
+        val input = (usage.long("input_tokens") ?: 0) + (usage.long("cache_read_input_tokens") ?: 0) + (usage.long("cache_creation_input_tokens") ?: 0)
         // Thinking blocks come back empty; only text blocks are the reply.
-        return body.array("content").filter { it.string("type") == "text" }.joinToString("") { it.string("text").orEmpty() }
+        val text = body.array("content").filter { it.string("type") == "text" }.joinToString("") { it.string("text").orEmpty() }
+        return AiResult(text, AiUsage(input, usage.long("output_tokens") ?: 0))
     }
 
     private fun claudeRequest(apiKey: String, url: String) = Request.Builder()
@@ -113,18 +152,31 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
         .header("x-api-key", apiKey)
         .header("anthropic-version", "2026-10-21")
 
-    private suspend fun gemini(c: AiCredentials, system: String, turns: List<AiTurn>): String {
+    private suspend fun gemini(c: AiCredentials, system: String, turns: List<AiTurn>, jsonReply: Boolean): AiResult {
         val payload = buildJsonObject {
             putJsonObject("systemInstruction") { putJsonArray("parts") { addJsonObject { put("text", system) } } }
             putJsonArray("contents") {
                 turns.forEach { turn ->
                     addJsonObject {
                         put("role", if (turn.fromUser) "user" else "model")
-                        putJsonArray("parts") { addJsonObject { put("text", turn.text) } }
+                        putJsonArray("parts") {
+                            turn.images.forEach { image ->
+                                addJsonObject {
+                                    putJsonObject("inlineData") {
+                                        put("mimeType", image.mime)
+                                        put("data", image.base64)
+                                    }
+                                }
+                            }
+                            addJsonObject { put("text", turn.text) }
+                        }
                     }
                 }
             }
-            putJsonObject("generationConfig") { put("maxOutputTokens", MAX_TOKENS) }
+            putJsonObject("generationConfig") {
+                put("maxOutputTokens", MAX_TOKENS)
+                if (jsonReply) put("responseMimeType", "application/json")
+            }
         }
         val model = c.model.removePrefix("models/")
         val request = Request.Builder()
@@ -137,15 +189,21 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
         val candidate = body.array("candidates").firstOrNull()?.jsonObject ?: throw declined()
         if (candidate.string("finishReason") in GEMINI_BLOCKED) throw declined()
         val parts = candidate["content"]?.jsonObject?.get("parts")?.jsonArray.orEmpty()
+        val usage = body["usageMetadata"] as? JsonObject
         // Thought summaries are flagged `thought: true`; skip them.
-        return parts.filter { it.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true }.joinToString("") { it.string("text").orEmpty() }
+        val text = parts.filter { it.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true }.joinToString("") { it.string("text").orEmpty() }
+        return AiResult(
+            text,
+            AiUsage(usage.long("promptTokenCount") ?: 0, (usage.long("candidatesTokenCount") ?: 0) + (usage.long("thoughtsTokenCount") ?: 0)),
+        )
     }
 
-    private suspend fun openAi(c: AiCredentials, system: String, turns: List<AiTurn>): String {
+    private suspend fun openAi(c: AiCredentials, system: String, turns: List<AiTurn>, jsonReply: Boolean): AiResult {
         val payload = buildJsonObject {
             put("model", c.model)
             // OpenAI renamed the limit; most compatible servers still take the old name.
             put(if (c.provider == AiProvider.OpenAI) "max_completion_tokens" else "max_tokens", MAX_TOKENS)
+            if (jsonReply && c.provider == AiProvider.OpenAI) putJsonObject("response_format") { put("type", "json_object") }
             putJsonArray("messages") {
                 addJsonObject {
                     put("role", "system")
@@ -154,7 +212,19 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
                 turns.forEach { turn ->
                     addJsonObject {
                         put("role", if (turn.fromUser) "user" else "assistant")
-                        put("content", turn.text)
+                        if (turn.images.isEmpty()) {
+                            put("content", turn.text)
+                        } else {
+                            putJsonArray("content") {
+                                turn.images.forEach { image ->
+                                    addJsonObject {
+                                        put("type", "image_url")
+                                        putJsonObject("image_url") { put("url", "data:${image.mime};base64,${image.base64}") }
+                                    }
+                                }
+                                text(turn.text)
+                            }
+                        }
                     }
                 }
             }
@@ -167,7 +237,13 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
         val body = execute(c, request)
         val message = body.array("choices").firstOrNull()?.jsonObject?.get("message")?.jsonObject ?: throw declined()
         if (message.string("refusal") != null) throw declined()
-        return message.string("content").orEmpty()
+        val usage = body["usage"] as? JsonObject
+        return AiResult(message.string("content").orEmpty(), AiUsage(usage.long("prompt_tokens") ?: 0, usage.long("completion_tokens") ?: 0))
+    }
+
+    private fun JsonArrayBuilder.text(value: String) = addJsonObject {
+        put("type", "text")
+        put("text", value)
     }
 
     private fun openAiBase(c: AiCredentials): String {
@@ -222,15 +298,17 @@ class AiClient @Inject constructor(http: OkHttpClient, private val json: Json) {
 
     private fun JsonObject.array(name: String): JsonArray = (this[name] as? JsonArray) ?: JsonArray(emptyList())
 
-    private fun JsonElement.string(name: String): String? = (this as? JsonObject)?.get(name)?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+    private fun JsonElement.string(name: String): String? = ((this as? JsonObject)?.get(name) as? JsonPrimitive)?.contentOrNull
+
+    private fun JsonObject?.long(name: String): Long? = (this?.get(name) as? JsonPrimitive)?.longOrNull
 
     private companion object {
         const val CLAUDE = "https://api.anthropic.com"
         const val GEMINI = "https://generativelanguage.googleapis.com"
         const val OPENAI = "https://api.openai.com/v1"
 
-        /** Room for thinking plus a few short texts. */
-        const val MAX_TOKENS = 2048
+        /** Room for thinking plus a few texts and the JSON around them. */
+        const val MAX_TOKENS = 4096
         val JSON = "application/json".toMediaType()
         val GEMINI_BLOCKED = setOf("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION")
 
@@ -306,4 +384,30 @@ object ModelPicker {
     }
 
     private fun version(id: String): Double = VERSION.find(id)?.value?.toDoubleOrNull() ?: 0.0
+}
+
+/** Anthropic's list prices, for the spend estimate. Other providers show tokens only. */
+object AiPricing {
+    /** US dollars per million input and output tokens. */
+    private val claude = mapOf(
+        "claude-fable-5-1" to (10.0 to 50.0),
+        "claude-fable-5" to (10.0 to 50.0),
+        "claude-opus-5-5" to (4.0 to 20.0),
+        "claude-opus-5" to (5.0 to 25.0),
+        "claude-opus-4-8" to (5.0 to 25.0),
+        "claude-opus-4-7" to (5.0 to 25.0),
+        "claude-opus-4-6" to (5.0 to 25.0),
+        "claude-sonnet-5-5" to (2.0 to 10.0),
+        "claude-sonnet-5" to (2.0 to 10.0),
+        "claude-sonnet-4-6" to (3.0 to 15.0),
+        "claude-haiku-5-5" to (0.10 to 0.50),
+        "claude-haiku-4-5" to (1.0 to 5.0),
+    )
+
+    /** Estimated cost in millionths of a dollar, or null when the model's price isn't known. */
+    fun costMicros(provider: AiProvider, model: String, usage: AiUsage): Long? {
+        if (provider != AiProvider.Claude) return null
+        val (input, output) = claude[model] ?: return null
+        return (usage.inputTokens * input + usage.outputTokens * output).toLong()
+    }
 }

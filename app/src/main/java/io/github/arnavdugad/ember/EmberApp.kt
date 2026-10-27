@@ -37,6 +37,8 @@ class EmberApp :
     // at all in Preview mode).
     @Inject lateinit var chatNotifier: dagger.Lazy<ChatNotifier>
 
+    @Inject lateinit var aiCloudSync: dagger.Lazy<io.github.arnavdugad.ember.data.ai.AiCloudSync>
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
 
@@ -51,6 +53,7 @@ class EmberApp :
         // No push server on the free plan: listen while the process lives, poll when it doesn't.
         if (firebase) {
             chatNotifier.get().start()
+            aiCloudSync.get().start()
             MessageSyncWorker.schedule(this)
         }
     }

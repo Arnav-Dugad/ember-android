@@ -4,6 +4,7 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.data.model.Message
 import io.github.arnavdugad.ember.data.model.MessageType
+import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,10 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** The message a persona's text quotes. */
+@Serializable
+internal data class StoredReply(val id: String, val senderId: String, val text: String, val type: String)
+
 @Serializable
 internal data class StoredAiMessage(
     val id: String,
@@ -31,9 +36,15 @@ internal data class StoredAiMessage(
     val at: Long,
     /** My reaction to it, if any. */
     val reaction: String? = null,
+    val replyTo: StoredReply? = null,
+    /** A voice note: the synthesized audio on this phone. [text] is what it says. */
+    val voicePath: String? = null,
+    val durationMs: Long = 0,
+    /** Sent unprompted after a quiet spell. */
+    val checkIn: Boolean = false,
 )
 
-/** One demo chat's AI side: the persona's messages plus their read/seen markers. */
+/** One demo chat's AI side: the persona's messages, its inner state, and its read/seen markers. */
 @Serializable
 internal data class StoredAiChat(
     val myUid: String,
@@ -43,7 +54,15 @@ internal data class StoredAiChat(
     val seenAt: Long? = null,
     /** When I last read theirs. */
     val readAt: Long? = null,
-)
+    val mood: String? = null,
+    val warmth: Int = Persona.START_WARMTH,
+    val memory: List<String> = emptyList(),
+    /** The persona's reactions to my messages, by message id. */
+    val reactions: Map<String, String> = emptyMap(),
+    val lastCheckInAt: Long? = null,
+) {
+    val state: PersonaState get() = PersonaState(mood, warmth, memory)
+}
 
 /**
  * The persona's side of demo chats, kept on this phone only. Their messages are never written to
@@ -55,6 +74,9 @@ internal data class StoredAiChat(
 @Singleton
 class AiChatStore @Inject constructor(@ApplicationContext context: Context, mode: BackendMode) {
     private val dir: File? = if (mode == BackendMode.Firebase) File(context.filesDir, "ai_chats") else null
+
+    /** Voice notes live here in both modes; Preview clears them with the chats. */
+    internal val voiceDir: File = File(context.filesDir, "ai_voice")
     private val json = Json { ignoreUnknownKeys = true }
     private val mutex = Mutex()
     private val _chats = MutableStateFlow<Map<String, StoredAiChat>>(emptyMap())
@@ -68,7 +90,10 @@ class AiChatStore @Inject constructor(@ApplicationContext context: Context, mode
     suspend fun load() = mutex.withLock {
         if (loaded) return@withLock
         loaded = true
-        val files = withContext(Dispatchers.IO) { dir?.listFiles { f -> f.extension == "json" }.orEmpty().toList() }
+        val files = withContext(Dispatchers.IO) {
+            if (dir == null) voiceDir.deleteRecursively()
+            dir?.listFiles { f -> f.extension == "json" }.orEmpty().toList()
+        }
         val restored = files.mapNotNull { file ->
             withContext(Dispatchers.IO) { runCatching { json.decodeFromString<StoredAiChat>(file.readText()) }.getOrNull() }
                 ?.let { file.nameWithoutExtension to it }
@@ -77,15 +102,41 @@ class AiChatStore @Inject constructor(@ApplicationContext context: Context, mode
     }
 
     /** Adds one of the persona's messages, stamped now. */
-    suspend fun add(matchId: String, myUid: String, personaUid: String, text: String) = edit(matchId, myUid, personaUid) { chat ->
-        chat.copy(messages = chat.messages + StoredAiMessage("$ID_PREFIX${UUID.randomUUID()}", text, System.currentTimeMillis()))
+    internal suspend fun add(
+        matchId: String,
+        myUid: String,
+        personaUid: String,
+        text: String,
+        replyTo: ReplyRef? = null,
+        voice: File? = null,
+        durationMs: Long = 0,
+        checkIn: Boolean = false,
+    ) = edit(matchId, myUid, personaUid) { chat ->
+        val now = System.currentTimeMillis()
+        val message = StoredAiMessage(
+            id = "$ID_PREFIX${UUID.randomUUID()}",
+            text = text,
+            at = now,
+            replyTo = replyTo?.let { StoredReply(it.id, it.senderId, it.text, it.type.key) },
+            voicePath = voice?.path,
+            durationMs = durationMs,
+            checkIn = checkIn,
+        )
+        chat.copy(messages = chat.messages + message, lastCheckInAt = if (checkIn) now else chat.lastCheckInAt)
     }
+
+    internal suspend fun updateState(matchId: String, myUid: String, personaUid: String, state: PersonaState) =
+        edit(matchId, myUid, personaUid) { it.copy(mood = state.mood, warmth = state.warmth, memory = state.memory) }
+
+    /** The persona reacts to one of my messages. */
+    internal suspend fun reactToMine(matchId: String, myUid: String, personaUid: String, messageId: String, emoji: String) =
+        edit(matchId, myUid, personaUid) { it.copy(reactions = it.reactions + (messageId to emoji)) }
 
     suspend fun markSeen(matchId: String, myUid: String, personaUid: String) = edit(matchId, myUid, personaUid) {
         it.copy(seenAt = System.currentTimeMillis())
     }
 
-    /** No-op for chats with no AI messages, so ordinary chats never create a file. */
+    /** No-op for chats with no AI side, so ordinary chats never create a file. */
     suspend fun markRead(matchId: String) {
         if (_chats.value[matchId] == null) return
         edit(matchId, null, null) { it.copy(readAt = System.currentTimeMillis()) }
@@ -95,14 +146,25 @@ class AiChatStore @Inject constructor(@ApplicationContext context: Context, mode
         chat.copy(messages = chat.messages.map { if (it.id == messageId) it.copy(reaction = emoji) else it })
     }
 
+    /** The audio of one of the persona's voice notes. */
+    fun voiceFile(matchId: String, messageId: String): File? =
+        _chats.value[matchId]?.messages?.firstOrNull { it.id == messageId }?.voicePath?.let(::File)?.takeIf { it.exists() }
+
     suspend fun delete(matchId: String) = mutex.withLock {
+        val chat = _chats.value[matchId]
         _chats.update { it - matchId }
-        withContext(Dispatchers.IO) { dir?.let { File(it, "$matchId.json").delete() } }
+        withContext(Dispatchers.IO) {
+            chat?.messages?.mapNotNull { it.voicePath }?.forEach { File(it).delete() }
+            dir?.let { File(it, "$matchId.json").delete() }
+        }
     }
 
     suspend fun wipe() = mutex.withLock {
         _chats.value = emptyMap()
-        withContext(Dispatchers.IO) { dir?.deleteRecursively() }
+        withContext(Dispatchers.IO) {
+            dir?.deleteRecursively()
+            voiceDir.deleteRecursively()
+        }
     }
 
     private suspend fun edit(matchId: String, myUid: String?, personaUid: String?, change: (StoredAiChat) -> StoredAiChat) {
@@ -133,8 +195,11 @@ class AiChatStore @Inject constructor(@ApplicationContext context: Context, mode
 internal fun StoredAiMessage.toMessage(chat: StoredAiChat) = Message(
     id = id,
     senderId = chat.personaUid,
-    type = MessageType.Text,
+    type = if (voicePath != null) MessageType.Voice else MessageType.Text,
     text = text,
     createdAt = Instant.ofEpochMilli(at),
     reactions = reaction?.let { mapOf(chat.myUid to it) }.orEmpty(),
+    replyTo = replyTo?.let { ReplyRef(it.id, it.senderId, it.text, MessageType.of(it.type)) },
+    audioId = if (voicePath != null) id else null,
+    durationMs = durationMs,
 )

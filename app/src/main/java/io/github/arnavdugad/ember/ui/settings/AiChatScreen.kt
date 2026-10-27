@@ -81,6 +81,17 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import io.github.arnavdugad.ember.data.ai.AiCloudSync
+import io.github.arnavdugad.ember.data.ai.AiSpend
+import io.github.arnavdugad.ember.data.repo.BackendMode
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.Insights
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.graphics.SolidColor
+import io.github.arnavdugad.ember.core.designsystem.PillShape
+import java.util.Locale
 
 /** The result of checking a key against the provider. */
 sealed interface KeyCheck {
@@ -102,8 +113,15 @@ class AiChatViewModel @Inject constructor(
     private val settings: AiSettingsRepository,
     private val client: AiClient,
     private val store: AiChatStore,
+    private val cloud: AiCloudSync,
+    mode: BackendMode,
 ) : ViewModel() {
     val config: StateFlow<AiConfig?> = settings.config.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val spend: StateFlow<AiSpend> = settings.spend.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AiSpend())
+
+    /** Keys can only follow the login when there's a real account (not Preview mode). */
+    val syncAvailable: Boolean = mode == BackendMode.Firebase
 
     private val _ui = MutableStateFlow(AiChatUi())
     val ui: StateFlow<AiChatUi> = _ui.asStateFlow()
@@ -193,6 +211,14 @@ class AiChatViewModel @Inject constructor(
 
     fun setFirstMove(enabled: Boolean) = viewModelScope.launch { settings.setFirstMove(enabled) }
 
+    fun setVoiceNotes(enabled: Boolean) = viewModelScope.launch { settings.setVoiceNotes(enabled) }
+
+    fun setImmersive(enabled: Boolean) = viewModelScope.launch { settings.setImmersive(enabled) }
+
+    fun setMonthlyCap(cap: Int) = viewModelScope.launch { settings.setMonthlyCap(cap) }
+
+    fun setCloudSync(enabled: Boolean) = viewModelScope.launch { cloud.setEnabled(enabled) }
+
     fun clearChats() = viewModelScope.launch {
         store.wipe()
         _ui.update { it.copy(cleared = true) }
@@ -203,6 +229,7 @@ class AiChatViewModel @Inject constructor(
 fun AiChatScreen(onBack: () -> Unit, viewModel: AiChatViewModel = hiltViewModel()) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val spend by viewModel.spend.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     val context = LocalContext.current
     val open: (String) -> Unit = { url -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }
@@ -273,20 +300,50 @@ fun AiChatScreen(onBack: () -> Unit, viewModel: AiChatViewModel = hiltViewModel(
                     SettingsToggleRow(
                         icon = Icons.Rounded.WavingHand,
                         title = "Let them text first",
-                        subtitle = "Open a new demo match and they may send the opener.",
+                        subtitle = "They may send the opener on a new match, and check in after a quiet spell (at most once a day).",
                         checked = c.firstMove,
                         onCheckedChange = viewModel::setFirstMove,
                     )
+                    SettingsToggleRow(
+                        icon = Icons.Rounded.GraphicEq,
+                        title = "Voice notes",
+                        subtitle = "Now and then they answer with a voice note, spoken by your phone. A different voice for each person.",
+                        checked = c.voiceNotes,
+                        onCheckedChange = viewModel::setVoiceNotes,
+                    )
+                    SettingsToggleRow(
+                        icon = Icons.Rounded.Visibility,
+                        title = "Hide \"Demo\" in chats",
+                        subtitle = "Chats and matches with demo profiles look like any other. Discover and profiles still mark them Demo, so you can always check who's real.",
+                        checked = c.immersive,
+                        onCheckedChange = viewModel::setImmersive,
+                    )
+                }
+
+                SettingsGroup("This month") { SpendPanel(c, spend, viewModel::setMonthlyCap) }
+
+                if (viewModel.syncAvailable) {
+                    SettingsGroup("Your account") {
+                        SettingsToggleRow(
+                            icon = Icons.Rounded.CloudSync,
+                            title = "Keep my keys in my account",
+                            subtitle = "Your keys and AI settings are saved to your Ember account, where only you can read them, so they're back " +
+                                "when you sign in on any phone. Signing out removes them from this phone. Off: they stay on this phone only.",
+                            checked = c.cloudSync,
+                            onCheckedChange = viewModel::setCloudSync,
+                        )
+                    }
                 }
 
                 SettingsGroup("Privacy") {
                     SettingsRow(
                         icon = Icons.Rounded.Lock,
                         title = "What leaves your phone",
-                        subtitle = "Your key is encrypted with the Android Keystore and sent only to ${c.provider.company}. " +
-                            "To write a reply, Ember sends ${c.provider.company} that demo chat (the last 40 messages), the demo's profile, " +
-                            "and your first name, age, city, bio, prompts and interests. Replies are stored only on this phone. " +
-                            "Chats with real people never go to AI. Usage is billed to your own ${c.provider.company} account.",
+                        subtitle = "Your key is encrypted on this phone${if (viewModel.syncAvailable && c.cloudSync) " and kept in your account" else ""}, and used only " +
+                            "with ${c.provider.company}. For a demo reply, Ember sends ${c.provider.company} that demo chat (the last 40 messages, " +
+                            "including photos you sent in it), the demo's profile, and your first name, age, city, bio, prompts and interests. " +
+                            "Replies and voice notes stay on this phone. A chat with a real person goes to AI only when you tap Help me reply, " +
+                            "and your profile only when you ask for writing help. Usage is billed to your own ${c.provider.company} account.",
                     )
                     SettingsRow(
                         icon = Icons.Rounded.DeleteSweep,
@@ -479,3 +536,56 @@ private fun ModelPanel(c: AiConfig, models: List<String>, onModel: (String) -> U
 }
 
 private const val MODEL_CHIPS = 10
+
+/** This month's use, and an optional cap on demo replies. */
+@Composable
+private fun SpendPanel(c: AiConfig, spend: AiSpend, onCap: (Int) -> Unit) {
+    val colors = EmberTheme.colors
+    GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.panel) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SettingsIconTile(Icons.Rounded.Insights)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(spendHeadline(spend), style = EmberTheme.type.titleSmall, color = colors.textPrimary)
+                    Text(
+                        "${spend.replies} replies · ${tokens(spend.inputTokens + spend.outputTokens)} tokens on this phone" +
+                            if (!spend.priced) ". Cost is shown only for Claude models; your provider's dashboard has the rest." else ".",
+                        style = EmberTheme.type.caption,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+            if (c.monthlyCap > 0) {
+                Spacer(Modifier.height(12.dp))
+                val used = (spend.replies.toFloat() / c.monthlyCap).coerceIn(0f, 1f)
+                Box(Modifier.fillMaxWidth().height(6.dp).clip(PillShape).background(colors.textPrimary.copy(alpha = 0.12f))) {
+                    Box(
+                        Modifier.fillMaxWidth(used).fillMaxHeight().clip(PillShape)
+                            .background(if (used >= 1f) SolidColor(colors.danger) else colors.accentHorizontal),
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("Pause demo replies after", style = EmberTheme.type.caption, color = colors.textSecondary)
+            Spacer(Modifier.height(8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0, 100, 300, 1_000).forEach { cap ->
+                    EmberChip(if (cap == 0) "No limit" else "$cap replies", selected = c.monthlyCap == cap, onClick = { onCap(cap) })
+                }
+            }
+        }
+    }
+}
+
+private fun spendHeadline(spend: AiSpend): String = when {
+    spend.replies == 0 && spend.inputTokens == 0L -> "Nothing used yet this month"
+    spend.priced -> "About $" + "%.2f".format(Locale.US, spend.costMicros / 1_000_000.0) + " this month"
+    else -> "${spend.replies} replies this month"
+}
+
+private fun tokens(n: Long): String = when {
+    n >= 1_000_000 -> "%.1fM".format(Locale.US, n / 1_000_000.0)
+    n >= 1_000 -> "%.0fk".format(Locale.US, n / 1_000.0)
+    else -> n.toString()
+}

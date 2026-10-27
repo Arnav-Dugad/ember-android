@@ -7,8 +7,9 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.github.arnavdugad.ember.data.ai.AiAssist
 import io.github.arnavdugad.ember.data.ai.AiChatEngine
-import io.github.arnavdugad.ember.data.ai.AiProvider
+import io.github.arnavdugad.ember.data.ai.AiConfig
 import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.DateIdea
@@ -59,7 +60,8 @@ class ChatViewModel @AssistedInject constructor(
     private val safety: SafetyRepository,
     private val unmatches: UnmatchQueue,
     profiles: ProfileRepository,
-    private val ai: AiChatEngine,
+    private val engine: AiChatEngine,
+    private val assist: AiAssist,
     aiSettings: AiSettingsRepository,
 ) : ViewModel() {
     @AssistedFactory
@@ -86,9 +88,12 @@ class ChatViewModel @AssistedInject constructor(
         .map { uid -> runCatching { profiles.getProfile(uid) }.getOrNull() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** The AI that answers for demo profiles, or null when AI chat is off or not set up. */
-    val aiProvider: StateFlow<AiProvider?> = aiSettings.config.map { if (it.ready) it.provider else null }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    /** AI chat as this screen needs it: whether demo profiles reply, and whether to hide that they're demos. */
+    val ai: StateFlow<AiConfig> = aiSettings.config
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AiConfig())
+
+    private val _wingman = MutableStateFlow<WingmanState>(WingmanState.Closed)
+    val wingman: StateFlow<WingmanState> = _wingman.asStateFlow()
 
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui.asStateFlow()
@@ -102,9 +107,9 @@ class ChatViewModel @AssistedInject constructor(
         viewModelScope.launch {
             messages.filterNotNull().map { it.firstOrNull()?.id }.distinctUntilChanged().collect { repo.markRead(matchId) }
         }
-        ai.onChatOpened(matchId)
+        engine.onChatOpened(matchId)
         viewModelScope.launch {
-            ai.errors.filter { it.matchId == matchId }.collect { error -> _ui.update { it.copy(error = error.message) } }
+            engine.errors.filter { it.matchId == matchId }.collect { error -> _ui.update { it.copy(error = error.message) } }
         }
     }
 
@@ -211,6 +216,21 @@ class ChatViewModel @AssistedInject constructor(
         _ui.update { it.copy(removed = true) }
     }
 
+    /** Asks the user's AI for three replies to choose from. Nothing is sent until they send it. */
+    fun suggestReplies() {
+        _wingman.value = WingmanState.Loading
+        viewModelScope.launch {
+            _wingman.value = runCatching { assist.replies(matchId) }.fold(
+                onSuccess = { if (it.isEmpty()) WingmanState.Failed("No ideas came back. Try again.") else WingmanState.Ready(it) },
+                onFailure = { WingmanState.Failed(it.message ?: "Couldn't get ideas. Try again.") },
+            )
+        }
+    }
+
+    fun closeWingman() {
+        _wingman.value = WingmanState.Closed
+    }
+
     fun showError(message: String) = _ui.update { it.copy(error = message) }
 
     fun clearError() = _ui.update { it.copy(error = null) }
@@ -236,4 +256,12 @@ class ChatViewModel @AssistedInject constructor(
             kotlinx.coroutines.MainScope().launch { repo.setTyping(matchId, false) }
         }
     }
+}
+
+/** The reply-ideas sheet. */
+sealed interface WingmanState {
+    data object Closed : WingmanState
+    data object Loading : WingmanState
+    data class Ready(val ideas: List<String>) : WingmanState
+    data class Failed(val message: String) : WingmanState
 }

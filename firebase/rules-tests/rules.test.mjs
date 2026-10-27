@@ -676,3 +676,40 @@ describe("reports and the daily report limit", () => {
     await assertSucceeds(sendReport(BOB, 1));
   });
 });
+
+describe("AI chat settings in the account", () => {
+  const config = (extra = {}) => ({
+    provider: "claude", models: { claude: "claude-opus-5-5" }, baseUrl: "", pace: "natural", enabled: true,
+    firstMove: true, voiceNotes: true, immersive: true, monthlyCap: 0, keys: { claude: "sk-ant-test" },
+    changedAt: 1, updatedAt: serverTimestamp(), ...extra,
+  });
+  const path = (uid) => `users/${uid}/ai/config`;
+
+  test("the owner can save, read, update and delete their AI settings", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(setDoc(doc(fs, path(ALICE)), config()));
+    await assertSucceeds(getDoc(doc(fs, path(ALICE))));
+    await assertSucceeds(setDoc(doc(fs, path(ALICE)), config({ provider: "compatible", baseUrl: "https://openrouter.ai/api/v1", keys: { compatible: "k" } })));
+    await assertSucceeds(deleteDoc(doc(fs, path(ALICE))));
+  });
+
+  test("nobody else can read or write them", async () => {
+    await seed((fs) => setDoc(doc(fs, path(ALICE)), { ...config(), updatedAt: new Date() }));
+    await assertFails(getDoc(doc(db(BOB), path(ALICE))));
+    await assertFails(setDoc(doc(db(BOB), path(ALICE)), config()));
+    await assertFails(deleteDoc(doc(db(BOB), path(ALICE))));
+    await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), path(ALICE))));
+  });
+
+  test("only the config doc, only whitelisted fields, sizes capped", async () => {
+    const fs = db(ALICE);
+    await assertFails(setDoc(doc(fs, `users/${ALICE}/ai/other`), config()));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ extra: true })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ provider: "mystery" })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ keys: { claude: "x".repeat(401) } })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ keys: { mystery: "k" } })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ baseUrl: "http://insecure.example" })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ monthlyCap: -1 })));
+    await assertFails(setDoc(doc(fs, path(ALICE)), config({ updatedAt: new Date(0) })));
+  });
+});

@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
+import java.io.File
 import java.time.Instant
 
 /**
@@ -87,6 +88,14 @@ class AiMatchRepository(
         if (AiChatStore.isAiMessage(messageId)) store.react(matchId, messageId, emoji) else base.react(matchId, messageId, emoji)
     }
 
+    /** The persona's voice notes are synthesized on this phone. */
+    override suspend fun voiceFile(matchId: String, message: Message): File =
+        if (AiChatStore.isAiMessage(message.id)) {
+            store.voiceFile(matchId, message.id) ?: throw IllegalStateException("That voice note is no longer on this phone.")
+        } else {
+            base.voiceFile(matchId, message)
+        }
+
     override suspend fun markRead(matchId: String) {
         base.markRead(matchId)
         store.markRead(matchId)
@@ -113,6 +122,7 @@ class AiAwareSafetyRepository(
     private val base: SafetyRepository,
     private val store: AiChatStore,
     private val settings: AiSettingsRepository,
+    private val cloud: AiCloudSync,
 ) : SafetyRepository by base {
     override suspend fun unmatch(matchId: String) {
         base.unmatch(matchId)
@@ -120,6 +130,8 @@ class AiAwareSafetyRepository(
     }
 
     override suspend fun deleteAccount() {
+        // First, while still signed in: the rules only let the owner delete it.
+        cloud.deleteFromAccount()
         base.deleteAccount()
         store.wipe()
         settings.wipe()

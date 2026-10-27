@@ -627,6 +627,43 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---- AI chat settings (users/{uid}/ai/config) ----
+    // The user's own AI provider choice and API keys, so they follow the login to a new phone.
+    // Only the owner can ever read or write it; every field is whitelisted and size-capped.
+    function aiProviders() {
+      return ['claude', 'gemini', 'openai', 'compatible'];
+    }
+
+    function validAiStrings(m, max) {
+      return m is map
+        && m.keys().hasOnly(aiProviders())
+        && (!('claude' in m) || (m.claude is string && m.claude.size() <= max))
+        && (!('gemini' in m) || (m.gemini is string && m.gemini.size() <= max))
+        && (!('openai' in m) || (m.openai is string && m.openai.size() <= max))
+        && (!('compatible' in m) || (m.compatible is string && m.compatible.size() <= max));
+    }
+
+    function validAiConfig(d) {
+      return d.keys().hasOnly(['provider', 'models', 'baseUrl', 'pace', 'enabled', 'firstMove', 'voiceNotes',
+          'immersive', 'monthlyCap', 'keys', 'changedAt', 'updatedAt'])
+        && d.provider in aiProviders()
+        && validAiStrings(d.models, 120)
+        && validAiStrings(d.keys, 400)
+        && d.baseUrl is string && d.baseUrl.size() <= 300
+        && (d.baseUrl == '' || d.baseUrl.matches('https://.+'))
+        && d.pace in ['natural', 'quick']
+        && d.enabled is bool && d.firstMove is bool && d.voiceNotes is bool && d.immersive is bool
+        && d.monthlyCap is int && d.monthlyCap >= 0 && d.monthlyCap <= 100000
+        && d.changedAt is int
+        && d.updatedAt == request.time;
+    }
+
+    match /users/{uid}/ai/{docId} {
+      allow read, delete: if isOwner(uid) && docId == 'config';
+      allow create, update: if isOwner(uid) && docId == 'config' && validAiConfig(request.resource.data);
+    }
+    // ---- end AI chat settings ----
+
     match /reports/{reportId} {
       allow read, update, delete: if false;
       allow create: if isAdult()

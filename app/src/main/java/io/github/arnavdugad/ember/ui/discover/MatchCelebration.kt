@@ -50,7 +50,7 @@ import io.github.arnavdugad.ember.core.designsystem.OverlayEffect
 import io.github.arnavdugad.ember.core.image.EmberImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import io.github.arnavdugad.ember.data.ai.AiProvider
+import io.github.arnavdugad.ember.data.ai.AiConfig
 
 /**
  * "It's a match": both photos fly in from opposite edges and settle into a tilted overlap, a
@@ -63,7 +63,7 @@ fun MatchCelebration(
     celebration: Celebration,
     myPhotoUrl: String?,
     /** The AI answering for demo profiles, or null when none is set up. */
-    aiProvider: AiProvider?,
+    ai: AiConfig,
     onMessage: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -161,11 +161,11 @@ fun MatchCelebration(
                             color = colors.textSecondary,
                             textAlign = TextAlign.Center,
                         )
-                        if (match.otherIsDemo) {
+                        if (match.otherIsDemo && !ai.hidesDemo) {
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                if (aiProvider != null) {
-                                    "${match.otherName} is a demo profile. ${aiProvider.label} will reply in character with your key."
+                                if (ai.ready) {
+                                    "${match.otherName} is a demo profile. They'll reply in character with your AI key."
                                 } else {
                                     "${match.otherName} is a demo profile, so they won't reply. Add an AI key in Settings and they will."
                                 },

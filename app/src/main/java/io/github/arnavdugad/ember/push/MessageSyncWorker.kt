@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import io.github.arnavdugad.ember.data.ai.AiChatEngine
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,10 +28,13 @@ class MessageSyncWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val matches: MatchRepository,
     private val notifier: ChatNotifier,
+    private val ai: AiChatEngine,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         if (withContext(Dispatchers.Main) { ChatNotifier.isForeground() }) return Result.success()
+        // Demo profiles may text first after a quiet spell; the notification below then shows it.
+        runCatching { ai.checkIn() }
         val list = runCatching { matches.fetchMatches() }.getOrElse { return Result.retry() }
         notifier.notifyUnread(list, background = true)
         return Result.success()

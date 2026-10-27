@@ -233,20 +233,35 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
   `FirebaseSafetyRepository`), including `voices/{uid}` and the `hiddenBy` entries it wrote (the
   targets come from its own `blocks`), then `FirebaseUser.delete()`. Reports and report counters are kept.
 
-## AI chat (device only)
+## AI chat
 
-Demo profiles can reply through the user's own AI key. None of it touches Firestore, so the rules
-are unchanged: a client can still only post messages as itself.
+Demo profiles can reply through the user's own AI key. The persona's side never touches
+Firestore, so a client can still only post messages as itself.
 
 - **Settings** live in the `ember_ai` DataStore on the phone: provider, model per provider, base
-  URL (for OpenAI-compatible providers), pace, first move, and each provider's API key sealed
-  with AES-256-GCM under a non-exportable Android Keystore key (`ember_ai_keys`). Backups are off.
-- **Replies** live in `files/ai_chats/{matchId}.json` (memory only in Preview mode): the persona's
-  messages, my reactions to them, and the read/seen markers. `AiMatchRepository` merges them into
-  the chat, the match list preview, unread state, read receipts and the typing indicator.
-- **Sent to the provider**, per reply: the demo's profile, the last 40 messages of that chat, and
-  my first name, age, city, bio, prompts and interests. Nothing else, and never another chat.
-- Unmatching deletes that chat's file; deleting the account deletes every file and the keys.
+  URL (for OpenAI-compatible providers), pace, first move, voice notes, immersive mode, monthly
+  reply cap, this month's usage, and each provider's API key sealed with AES-256-GCM under a
+  non-exportable Android Keystore key (`ember_ai_keys`). Backups are off.
+- **In the account** (`users/{uid}/ai/config`, on by default, switchable): the same settings with
+  the keys, so they follow the login. Only the owner can read or write it; the rules whitelist
+  every field and cap sizes (keys 400 chars, models 120, `baseUrl` must be `https://`). On sign-in
+  the newer copy (`changedAt`) wins; on sign-out the phone forgets the keys; switching sync off
+  or deleting the account deletes the document.
+- **Persona state** lives in `files/ai_chats/{matchId}.json` (memory only in Preview mode): the
+  persona's messages (text, quoted reply, voice-note file and length, check-in flag), my reactions
+  to them, its reactions to mine, its mood, warmth (0-100, moving at most 12 per reply) and up to
+  15 remembered facts about me, plus read/seen markers. Voice notes are WAV files in
+  `files/ai_voice/`, spoken by the phone's text-to-speech. `AiMatchRepository` merges all of it into
+  the chat, previews, unread state, receipts, reactions, voice playback and the typing indicator.
+- **Check-ins**: the 15-minute message sync may let one quiet demo chat text first: after 3+
+  messages from me, 8-20 hours of quiet (per persona), 9:00-22:59 local, at most once a day, never
+  twice in a row unanswered.
+- **Sent to the provider**, per demo reply: the demo's profile, its mood, warmth and memory, the
+  last 40 messages of that chat with up to two of my recent photos (never view-once ones), and my
+  first name, age, city, bio, prompts and interests. **Help me reply** sends a chat (including a
+  real person's) only when tapped, and **writing help** sends my profile draft only when asked.
+- Unmatching deletes that chat's file and voice notes; deleting the account deletes all of them,
+  the account copy and the keys.
 
 ## Remote Config
 

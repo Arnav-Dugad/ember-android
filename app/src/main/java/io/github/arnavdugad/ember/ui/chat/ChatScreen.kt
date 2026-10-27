@@ -66,7 +66,7 @@ import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.image.EmberImage
-import io.github.arnavdugad.ember.data.ai.AiProvider
+import io.github.arnavdugad.ember.data.ai.AiConfig
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Message
 import io.github.arnavdugad.ember.data.model.MessageType
@@ -91,7 +91,8 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val typing by viewModel.otherTyping.collectAsStateWithLifecycle()
     val ui by viewModel.ui.collectAsStateWithLifecycle()
-    val aiProvider by viewModel.aiProvider.collectAsStateWithLifecycle()
+    val ai by viewModel.ai.collectAsStateWithLifecycle()
+    val wingman by viewModel.wingman.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
@@ -231,8 +232,11 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                     )
                 }
                 if (messages != null && list.isEmpty() && m != null) {
-                    item { ChatIntro(m, aiProvider, onPlay = { gameOpen = true }, onAiSettings = onAiSettings) }
+                    item { ChatIntro(m, ai, onPlay = { gameOpen = true }, onAiSettings = onAiSettings) }
                 }
+            }
+            if (ai.usable && m != null) {
+                WingmanChip(onClick = viewModel::suggestReplies)
             }
             Composer(
                 text = draft,
@@ -262,7 +266,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             )
         }
 
-        ChatTopBar(m, aiProvider, onBack = onBack, onProfile = { m?.let { onOpenProfile(it.otherUid) } }, onMenu = { safetyOpen = true })
+        ChatTopBar(m, ai, typing, onBack = onBack, onProfile = { m?.let { onOpenProfile(it.otherUid) } }, onMenu = { safetyOpen = true })
 
         ui.error?.let { error ->
             LaunchedEffect(error) {
@@ -344,6 +348,17 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             onBlock = viewModel::block,
             onUnmatch = viewModel::unmatch,
         )
+        WingmanSheet(
+            state = wingman,
+            name = m?.otherName.orEmpty(),
+            onPick = { idea ->
+                draft = idea
+                viewModel.onTyping(idea)
+                viewModel.closeWingman()
+            },
+            onRetry = viewModel::suggestReplies,
+            onDismiss = viewModel::closeWingman,
+        )
 
         viewing?.let { message ->
             ViewOnceViewer(message, onClose = { viewing = null }, onGone = { shown -> if (shown) viewModel.viewOnceClosed(message) })
@@ -370,7 +385,7 @@ private fun receiptFor(message: Message, match: Match): String = when {
 }
 
 @Composable
-private fun ChatTopBar(match: Match?, aiProvider: AiProvider?, onBack: () -> Unit, onProfile: () -> Unit, onMenu: () -> Unit) {
+private fun ChatTopBar(match: Match?, ai: AiConfig, typing: Boolean, onBack: () -> Unit, onProfile: () -> Unit, onMenu: () -> Unit) {
     val colors = EmberTheme.colors
     Row(
         Modifier
@@ -396,15 +411,15 @@ private fun ChatTopBar(match: Match?, aiProvider: AiProvider?, onBack: () -> Uni
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(match?.otherName.orEmpty(), style = EmberTheme.type.titleSmall, color = colors.textPrimary)
-                    if (match?.otherIsDemo == true) {
+                    if (match?.otherIsDemo == true && !ai.hidesDemo) {
                         Spacer(Modifier.width(8.dp))
                         DemoBadge()
                     }
                 }
                 Text(
                     when {
-                        match?.otherIsDemo != true -> "Tap to view profile"
-                        aiProvider != null -> "Demo profile · AI replies with ${aiProvider.label}"
+                        match?.otherIsDemo != true || ai.hidesDemo -> if (typing) "typing…" else "Tap to view profile"
+                        ai.ready -> "Demo profile · replies with AI"
                         else -> "Demo profile · won't reply"
                     },
                     style = EmberTheme.type.caption,
@@ -417,7 +432,7 @@ private fun ChatTopBar(match: Match?, aiProvider: AiProvider?, onBack: () -> Uni
 }
 
 @Composable
-private fun ChatIntro(match: Match, aiProvider: AiProvider?, onPlay: () -> Unit, onAiSettings: () -> Unit) {
+private fun ChatIntro(match: Match, ai: AiConfig, onPlay: () -> Unit, onAiSettings: () -> Unit) {
     val colors = EmberTheme.colors
     Column(Modifier.fillMaxWidth().padding(vertical = 40.dp, horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(110.dp).clip(CircleShape)) {
@@ -428,8 +443,8 @@ private fun ChatIntro(match: Match, aiProvider: AiProvider?, onPlay: () -> Unit,
         Spacer(Modifier.height(6.dp))
         Text(
             when {
-                !match.otherIsDemo -> "Skip the \"hey\". Ask about a prompt, or let the game do the flirting."
-                aiProvider != null -> "${match.otherName} is a demo profile. ${aiProvider.label} replies in character, using your own key."
+                !match.otherIsDemo || ai.hidesDemo -> "Skip the \"hey\". Ask about a prompt, or let the game do the flirting."
+                ai.ready -> "${match.otherName} is a demo profile. They'll reply in character with your AI key."
                 else -> "${match.otherName} is a demo profile and won't reply. Add an AI key and they'll text back in character."
             },
             style = EmberTheme.type.bodySmall,
@@ -438,7 +453,7 @@ private fun ChatIntro(match: Match, aiProvider: AiProvider?, onPlay: () -> Unit,
         )
         Spacer(Modifier.height(18.dp))
         GlassButton("Play Truth or Dare", onClick = onPlay, icon = Icons.Rounded.Casino)
-        if (match.otherIsDemo && aiProvider == null) {
+        if (match.otherIsDemo && !ai.ready) {
             Spacer(Modifier.height(10.dp))
             GlassButton("Set up AI replies", onClick = onAiSettings, icon = Icons.Rounded.AutoAwesome, contentColor = colors.accent)
         }

@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
+import io.github.arnavdugad.ember.data.ai.AiAssist
 
 data class EditorState(
     val draft: ProfileDraft = ProfileDraft(),
@@ -48,6 +49,10 @@ data class EditorState(
     val recordedVoice: File? = null,
     /** The saved voice intro was removed; its document is deleted on save. */
     val voiceRemoved: Boolean = false,
+    /** The user has an AI key, so the writing help buttons show. */
+    val aiWriting: Boolean = false,
+    /** The open AI writing sheet, if any. */
+    val writer: WriterState? = null,
 ) {
     val canAddPhotos: Boolean get() = draft.photos.size + uploading < MAX_PHOTOS
 
@@ -66,11 +71,16 @@ class ProfileEditorViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val location: LocationRepository,
     private val recorder: VoiceRecorder,
+    private val assist: AiAssist,
 ) : ViewModel() {
     private val _state = MutableStateFlow(EditorState())
     val state: StateFlow<EditorState> = _state.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            val available = runCatching { assist.available() }.getOrDefault(false)
+            _state.update { it.copy(aiWriting = available) }
+        }
         viewModelScope.launch {
             val existing = withTimeoutOrNull(4_000) { profiles.observeMyProfile().filterNotNull().first() }
             val matchOnly = withTimeoutOrNull(2_000) { profiles.observeMyMatchOnly().firstOrNull() }
@@ -87,6 +97,34 @@ class ProfileEditorViewModel @Inject constructor(
     fun setGender(value: Gender) = edit { copy(gender = value) }
     fun toggleInterestedIn(value: Gender) = edit { copy(interestedIn = interestedIn.toggle(value)) }
     fun setBio(value: String) = edit { copy(bio = value) }
+
+    /** Asks the user's AI for bio drafts, or answers to prompt [promptId]. */
+    fun writeWithAi(promptId: String? = null) {
+        val draft = _state.value.draft
+        val prompt = promptId?.let { id -> draft.prompts.firstOrNull { it.id == id } }
+        _state.update { it.copy(writer = WriterState(promptId = prompt?.id, title = prompt?.question ?: "Bio ideas")) }
+        viewModelScope.launch {
+            val result = runCatching { if (prompt == null) assist.bios(draft) else assist.promptAnswers(prompt.question, draft) }
+            _state.update { s ->
+                val open = s.writer ?: return@update s
+                s.copy(
+                    writer = result.fold(
+                        onSuccess = { ideas -> open.copy(loading = false, ideas = ideas, error = if (ideas.isEmpty()) "No ideas came back. Try again." else null) },
+                        onFailure = { e -> open.copy(loading = false, error = e.message ?: "Couldn't get ideas. Try again.") },
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Uses an idea as the bio or the prompt's answer; the user can still edit it. */
+    fun useIdea(text: String) {
+        val writer = _state.value.writer ?: return
+        if (writer.promptId == null) setBio(text.take(500)) else answerPrompt(writer.promptId, text.take(160))
+        closeWriter()
+    }
+
+    fun closeWriter() = _state.update { it.copy(writer = null) }
     fun setHeight(value: Int?) = edit { copy(heightCm = value) }
     fun setLookingFor(value: LookingFor) = edit { copy(lookingFor = value) }
     fun setAfterDark(value: Boolean) = edit { copy(afterDark = value) }
@@ -280,3 +318,12 @@ enum class SetupStep(val title: String, val subtitle: String) {
     Intent("What you're after", "Be upfront. It saves everyone time."),
     Location("Where are you?", "We only ever show your city, never your exact location."),
 }
+
+/** AI writing help: bio drafts ([promptId] null) or answers to one prompt. */
+data class WriterState(
+    val promptId: String?,
+    val title: String,
+    val loading: Boolean = true,
+    val ideas: List<String> = emptyList(),
+    val error: String? = null,
+)

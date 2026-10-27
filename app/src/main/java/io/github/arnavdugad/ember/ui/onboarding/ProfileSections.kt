@@ -69,6 +69,7 @@ import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.Gender
 import io.github.arnavdugad.ember.data.model.LookingFor
 import io.github.arnavdugad.ember.data.model.PromptTemplate
+import androidx.compose.material.icons.rounded.AutoAwesome
 
 @Composable
 fun BasicsSection(state: EditorState, vm: ProfileEditorViewModel) {
@@ -186,6 +187,7 @@ fun AboutSection(state: EditorState, vm: ProfileEditorViewModel) {
             maxLength = 500,
             imeAction = ImeAction.Default,
         )
+        if (state.aiWriting) AiWriteLink(if (d.bio.isBlank()) "Write my bio with AI" else "Polish my bio with AI") { vm.writeWithAi() }
         GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.panel) {
             Column(Modifier.padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -244,6 +246,10 @@ fun PromptsSection(state: EditorState, vm: ProfileEditorViewModel) {
                         maxLength = 160,
                         imeAction = ImeAction.Default,
                     )
+                    if (state.aiWriting) {
+                        Spacer(Modifier.height(8.dp))
+                        AiWriteLink("Answer ideas") { vm.writeWithAi(prompt.id) }
+                    }
                 }
             }
         }
@@ -380,6 +386,7 @@ val LocalProfileSheets = staticCompositionLocalOf { ProfileSheets() }
 /** The pickers the profile sections open. Call last inside the screen's root box. */
 @Composable
 fun ProfileSectionSheets(state: EditorState, vm: ProfileEditorViewModel, sheets: ProfileSheets) {
+    AiWriterSheet(state.writer, onPick = vm::useIdea, onRetry = { vm.writeWithAi(state.writer?.promptId) }, onDismiss = vm::closeWriter)
     PromptPickerSheet(
         visible = sheets.prompts,
         taken = state.draft.prompts.map { it.id }.toSet(),
@@ -444,5 +451,50 @@ fun AfterDarkOptIn(checked: Boolean, onChange: (Boolean) -> Unit) {
                 colors = SwitchDefaults.colors(checkedTrackColor = colors.accent, checkedThumbColor = Color.White),
             )
         }
+    }
+}
+
+/** "✨ Write with AI": shown only when the user has an AI key. */
+@Composable
+private fun AiWriteLink(text: String, onClick: () -> Unit) {
+    val colors = EmberTheme.colors
+    Row(
+        Modifier.pressable(onClick = onClick, pressedScale = 0.95f).padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = colors.accent, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = EmberTheme.type.label, color = colors.accent)
+    }
+}
+
+/** Three drafts from the user's AI; tapping one fills the field, which stays editable. */
+@Composable
+private fun AiWriterSheet(writer: WriterState?, onPick: (String) -> Unit, onRetry: () -> Unit, onDismiss: () -> Unit) {
+    val colors = EmberTheme.colors
+    GlassBottomSheet(visible = writer != null, onDismiss = onDismiss) {
+        Text(writer?.title.orEmpty(), style = EmberTheme.type.title, color = colors.textPrimary)
+        Spacer(Modifier.height(4.dp))
+        Text("Tap one to use it, then make it yours.", style = EmberTheme.type.bodySmall, color = colors.textSecondary)
+        Spacer(Modifier.height(16.dp))
+        when {
+            writer == null || writer.loading -> Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = colors.accent, strokeWidth = 2.5.dp, modifier = Modifier.size(28.dp))
+            }
+            writer.error != null -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(writer.error, style = EmberTheme.type.bodySmall, color = colors.danger)
+                Spacer(Modifier.height(12.dp))
+                GlassButton("Try again", onClick = onRetry)
+            }
+            else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                writer.ideas.forEach { idea ->
+                    GlassSurface(Modifier.fillMaxWidth().pressable(onClick = { onPick(idea) }, pressedScale = 0.97f), shape = EmberShapes.panel) {
+                        Text(idea, style = EmberTheme.type.body, color = colors.textPrimary, modifier = Modifier.padding(16.dp))
+                    }
+                }
+                GlassButton("More ideas", onClick = onRetry, icon = Icons.Rounded.AutoAwesome, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }
