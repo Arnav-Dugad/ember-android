@@ -218,12 +218,15 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     }
                     composable<ChatRoute> { backStack ->
                         val route = backStack.toRoute<ChatRoute>()
-                        ChatScreen(
-                            matchId = route.matchId,
-                            onBack = { nav.popBackStack() },
-                            onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
-                            onRemoved = { nav.popBackStack() },
-                        )
+                        // The top-bar avatar flies into the profile's hero photo.
+                        CompositionLocalProvider(LocalNavScope provides this) {
+                            ChatScreen(
+                                matchId = route.matchId,
+                                onBack = { nav.popBackStack() },
+                                onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
+                                onRemoved = { nav.popBackStack() },
+                            )
+                        }
                     }
                     composable<EditProfileRoute> { EditProfileScreen(onBack = { nav.popBackStack() }) }
                     composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }) }
