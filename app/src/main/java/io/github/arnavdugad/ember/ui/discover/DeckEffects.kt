@@ -1,11 +1,9 @@
 package io.github.arnavdugad.ember.ui.discover
 
-import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.provider.Settings
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -56,16 +54,13 @@ import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
+import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
-
-/** "Remove animations" in the system settings (animator duration scale 0). */
-fun reduceMotion(context: Context): Boolean =
-    runCatching { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
 
 // ---------- Free tonight ----------
 
@@ -219,8 +214,7 @@ class DeviceTilt {
 fun rememberDeviceTilt(): DeviceTilt {
     val context = LocalContext.current
     val tilt = remember { DeviceTilt() }
-    val enabled = remember(context) { !reduceMotion(context) }
-    if (!enabled) return tilt
+    if (rememberReduceMotion()) return tilt
     LifecycleResumeEffect(tilt) {
         val manager = context.getSystemService(SensorManager::class.java)
         val sensor = manager?.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)

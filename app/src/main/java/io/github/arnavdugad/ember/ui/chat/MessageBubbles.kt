@@ -65,6 +65,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -110,6 +111,36 @@ internal class BubbleActions(
     val onQuickReply: (String) -> Unit,
 )
 
+/**
+ * Decides which bubbles pop in: only messages that land at the newest end of the thread while
+ * it's open. Whatever the first [SETTLE_MS] of loading brings (cache, then server) is history,
+ * and older pages appended at the far end never count.
+ */
+internal class BubbleArrivals {
+    private val seen = HashSet<String>()
+    private val fresh = HashSet<String>()
+    private var openedAt = -1L
+
+    /** [ids] newest first, as the list shows them. */
+    fun observe(ids: List<String>, now: Long) {
+        if (openedAt < 0) openedAt = now
+        if (now - openedAt >= SETTLE_MS) {
+            for (id in ids) {
+                if (id in seen) break
+                fresh += id
+            }
+        }
+        seen += ids
+    }
+
+    /** True once for a message that should pop in; later calls (scrolled back into view) are false. */
+    fun consume(id: String): Boolean = fresh.remove(id)
+
+    companion object {
+        const val SETTLE_MS = 800L
+    }
+}
+
 /** The answers a date card offers its recipient. Sent as ordinary text messages. */
 internal val DateQuickReplies = listOf("I'm in 🔥", "Suggest another?")
 
@@ -129,6 +160,7 @@ internal fun MessageBubble(
     morphFromTyping: Boolean = false,
     highlighted: Boolean = false,
     showDateReplies: Boolean = false,
+    popIn: Boolean = false,
 ) {
     val colors = EmberTheme.colors
     val haptics = EmberTheme.haptics
@@ -145,10 +177,31 @@ internal fun MessageBubble(
             pulse.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = 400f))
         }
     }
+    // A new arrival pops from its tail corner with a little overshoot.
+    val pop = remember { Animatable(if (popIn) 0f else 1f) }
+    LaunchedEffect(Unit) { if (popIn) pop.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 420f)) }
     val trigger = with(density) { 60.dp.toPx() }
     val longPress = { haptics.confirm(); actions.onLongPress(latestMessage, bounds[0]) }
 
-    Column(modifier.fillMaxWidth().padding(top = topGap), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .then(
+                if (popIn) {
+                    Modifier.graphicsLayer {
+                        val s = 0.85f + 0.15f * pop.value
+                        scaleX = s
+                        scaleY = s
+                        alpha = (pop.value * 1.6f).coerceIn(0f, 1f)
+                        transformOrigin = TransformOrigin(if (mine) 1f else 0f, 1f)
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .padding(top = topGap),
+        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+    ) {
         if (timeLabel != null) {
             Text(
                 timeLabel,

@@ -1,9 +1,11 @@
 package io.github.arnavdugad.ember.core.designsystem
 
 import android.os.Build
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.runtime.Stable
@@ -83,5 +85,46 @@ class Haptics(private val view: View) {
         } else {
             v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 30, 60, 50, 80, 30), intArrayOf(0, 140, 0, 255, 0, 120), -1))
         }
+    }
+
+    /**
+     * Someone super liked you: a heartbeat, a firm "lub" and a softer "dub". Played as touch
+     * feedback, so it stays silent when the user has turned touch vibration off.
+     */
+    fun heartbeat() {
+        val v = vibrator
+        if (v == null || !v.hasVibrator()) {
+            confirm()
+            return
+        }
+        if (!touchFeedbackOn()) return
+        val effect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && v.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)) {
+            VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.55f, HEARTBEAT_GAP_MS)
+                .compose()
+        } else if (v.hasAmplitudeControl()) {
+            VibrationEffect.createWaveform(HeartbeatTimings, intArrayOf(0, 255, 0, 150), -1)
+        } else {
+            VibrationEffect.createWaveform(HeartbeatTimings, -1)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            v.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_TOUCH))
+        } else {
+            v.vibrate(effect)
+        }
+    }
+
+    /** API 33+ applies the touch-feedback setting to [VibrationAttributes.USAGE_TOUCH] itself. */
+    private fun touchFeedbackOn(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return true
+        @Suppress("DEPRECATION")
+        val key = Settings.System.HAPTIC_FEEDBACK_ENABLED
+        return runCatching { Settings.System.getInt(view.context.contentResolver, key, 1) != 0 }.getOrDefault(true)
+    }
+
+    private companion object {
+        const val HEARTBEAT_GAP_MS = 110
+        val HeartbeatTimings = longArrayOf(0, 45, 110, 35)
     }
 }

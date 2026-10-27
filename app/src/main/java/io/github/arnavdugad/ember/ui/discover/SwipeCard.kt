@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -58,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -75,7 +77,8 @@ import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
-import io.github.arnavdugad.ember.core.designsystem.PaginationBars
+import io.github.arnavdugad.ember.core.designsystem.LiquidPageIndicator
+import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.Catalog
@@ -85,7 +88,9 @@ import io.github.arnavdugad.ember.ui.main.sharedPhoto
 import io.github.arnavdugad.ember.ui.profile.VoicePill
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
 
 /** Drag state of the top card. Everything visual (rotation, stamps, the cards behind) derives from [offset]. */
 @Stable
@@ -105,6 +110,12 @@ class CardSwipeState {
     val vertical: Float get() = (-offset.value.y / (height * SUPER_FRACTION)).coerceIn(0f, 1f)
 
     val progress: Float get() = max(abs(horizontal), vertical)
+
+    /** The point the card turns about, as a fraction of its height: below it, or above if grabbed low. */
+    val pivot: Float get() = if (grabbedTop) 1.25f else -0.25f
+
+    /** Card tilt in degrees for a drag of [o]. */
+    fun rotationFor(o: Offset): Float = (o.x / width) * MAX_ROTATION * (if (grabbedTop) 1f else -1f)
 
     /** Which way the card would go if released now, by position alone. */
     val intent: SwipeDirection?
@@ -287,7 +298,13 @@ private fun TopCard(
             nudge.animateTo(0f, spring(dampingRatio = 0.35f, stiffness = 500f))
         }
     }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // A glow left where the card just was, tinted by where it's heading.
+    val trail = rememberSwipeTrail()
+    val trailOn = !rememberReduceMotion()
+    val colors = EmberTheme.colors
+    val trailTints = listOf(colors.accent, lerpColor(colors.textSecondary, colors.superLike, 0.25f), colors.superLike)
+    val trailGlow = remember(trail, trailTints) { Modifier.swipeTrail(trail, trailTints, corner = 32.dp) }
+    BoxWithConstraints(Modifier.fillMaxSize().then(trailGlow)) {
         with(density) {
             state.width = maxWidth.toPx()
             state.height = maxHeight.toPx()
@@ -346,7 +363,9 @@ private fun TopCard(
                         onDrag = { change, drag ->
                             change.consume()
                             tracker.addPointerInputChange(change)
-                            scope.launch { state.offset.snapTo(state.offset.value + drag) }
+                            val moved = state.offset.value + drag
+                            scope.launch { state.offset.snapTo(moved) }
+                            if (trailOn) trail.record(state, moved)
                         },
                     )
                 }
@@ -356,15 +375,33 @@ private fun TopCard(
                     translationY = o.y
                     // Rotate around a point below the card when grabbed at the top (and above
                     // it when grabbed at the bottom), the way a held photo pivots in your hand.
-                    val sign = if (state.grabbedTop) 1f else -1f
-                    rotationZ = (o.x / state.width) * MAX_ROTATION * sign
+                    rotationZ = state.rotationFor(o)
                     rotationX = tilt.x * tiltWeight
                     rotationY = nudge.value + tilt.y * tiltWeight
                     cameraDistance = 14f * this.density
-                    transformOrigin = TransformOrigin(0.5f, if (state.grabbedTop) 1.25f else -0.25f)
+                    transformOrigin = TransformOrigin(0.5f, state.pivot)
                 },
         )
     }
+}
+
+/** Records the card's pose for a drag of [o]: the pivoted turn swings its centre sideways too. */
+private fun SwipeTrail.record(state: CardSwipeState, o: Offset) {
+    val degrees = state.rotationFor(o)
+    val arm = (0.5f - state.pivot) * state.height
+    val rad = Math.toRadians(degrees.toDouble())
+    val tint = when {
+        state.vertical > abs(state.horizontal) -> TRAIL_SUPER
+        o.x >= 0f -> TRAIL_LIKE
+        else -> TRAIL_NOPE
+    }
+    record(
+        x = o.x - arm * sin(rad).toFloat(),
+        y = o.y + (state.pivot - 0.5f) * state.height + arm * cos(rad).toFloat(),
+        angle = degrees,
+        tint = tint,
+        weight = 0.35f + 0.65f * state.progress,
+    )
 }
 
 @Composable
@@ -457,7 +494,14 @@ fun ProfileCard(
                 .height(110.dp)
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.4f), Color.Transparent))),
         )
-        PaginationBars(profile.photos.size, photoIndex, Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+        // Tap-to-advance springs the indicator with a little overshoot, so it sloshes onto the photo.
+        val reduceMotion = rememberReduceMotion()
+        val pagePosition by animateFloatAsState(
+            photoIndex.toFloat(),
+            if (reduceMotion) snap() else spring(dampingRatio = 0.55f, stiffness = 380f),
+            label = "pagePosition",
+        )
+        LiquidPageIndicator(profile.photos.size, { pagePosition }, Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
         if (profile.isFreeTonight()) FreeTonightBadge(Modifier.align(Alignment.TopStart).padding(top = 26.dp, start = 14.dp))
         if (live) VoicePill(profile, Modifier.align(Alignment.TopEnd).padding(top = 26.dp, end = 14.dp))
         Column(

@@ -76,24 +76,40 @@ import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /** One tile: who liked you, their profile once fetched, and whether you've matched (unblurred). */
 data class AdmirerTile(val admirer: Admirer, val profile: Profile?, val matched: Boolean)
+
+/** Super likers the user has already felt a heartbeat for, kept for the life of the process. */
+@Singleton
+class SuperLikeHeartbeats @Inject constructor() {
+    private val felt = HashSet<String>()
+
+    /** True when [uids] holds anyone not felt before; they all count as felt from now on. */
+    @Synchronized
+    fun anyNew(uids: Collection<String>): Boolean = felt.addAll(uids)
+}
 
 @HiltViewModel
 class LikesYouViewModel @Inject constructor(
     discovery: DiscoveryRepository,
     matches: MatchRepository,
     private val profiles: ProfileRepository,
+    private val heartbeats: SuperLikeHeartbeats,
 ) : ViewModel() {
     private val fetched = MutableStateFlow<Map<String, Profile?>>(emptyMap())
     private val requested = mutableSetOf<String>()
@@ -110,6 +126,12 @@ class LikesYouViewModel @Inject constructor(
             .filter { !cache.containsKey(it.uid) || cache[it.uid] != null }
             .map { AdmirerTile(it, cache[it.uid], it.uid in matched) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Fires when an unmatched super liker appears who hasn't been announced yet. */
+    val superLikeArrived: Flow<Unit> = tiles
+        .filterNotNull()
+        .filter { list -> heartbeats.anyNew(list.filter { it.admirer.superLike && !it.matched }.map { it.admirer.uid }) }
+        .map { }
 
     private fun fetch(uid: String) {
         if (!requested.add(uid)) return
@@ -128,6 +150,8 @@ class LikesYouViewModel @Inject constructor(
 fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackToDeck: () -> Unit, viewModel: LikesYouViewModel = hiltViewModel()) {
     val tiles by viewModel.tiles.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
+    val haptics = EmberTheme.haptics
+    LaunchedEffect(viewModel) { viewModel.superLikeArrived.collect { haptics.heartbeat() } }
     var mysteryOpen by remember { mutableStateOf(false) }
     // Kept after closing so the sheet doesn't empty out while it slides away.
     var mystery by remember { mutableStateOf<AdmirerTile?>(null) }

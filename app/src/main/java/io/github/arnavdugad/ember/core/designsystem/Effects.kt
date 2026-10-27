@@ -1,5 +1,7 @@
 package io.github.arnavdugad.ember.core.designsystem
 
+import android.content.Context
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -9,14 +11,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithCache
@@ -25,9 +23,20 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import kotlin.math.cos
 import kotlin.math.sin
+
+/** "Remove animations" in the system settings (animator duration scale 0). */
+fun reduceMotion(context: Context): Boolean =
+    runCatching { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
+
+/** [reduceMotion], read once per call site rather than every recomposition. */
+@Composable
+fun rememberReduceMotion(): Boolean {
+    val context = LocalContext.current
+    return remember(context) { reduceMotion(context) }
+}
 
 /**
  * The living background behind every screen: two large, slowly drifting radial glows over the
@@ -99,35 +108,4 @@ private fun Path.addOutline(outline: androidx.compose.ui.graphics.Outline) = whe
     is androidx.compose.ui.graphics.Outline.Generic -> addPath(outline.path)
     is androidx.compose.ui.graphics.Outline.Rounded -> addRoundRect(outline.roundRect)
     is androidx.compose.ui.graphics.Outline.Rectangle -> addRect(outline.rect)
-}
-
-/**
- * Instagram-style photo pagination: one bar per photo, the current one fills over [progress]
- * (0..1) so paging feels like a continuous motion rather than a jump.
- */
-@Composable
-fun PaginationBars(count: Int, current: Int, modifier: Modifier = Modifier) {
-    if (count <= 1) return
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        repeat(count) { index ->
-            val fill by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (index <= current) 1f else 0f,
-                animationSpec = tween(260),
-                label = "bar$index",
-            )
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(3.dp)
-                    .background(Color.White.copy(alpha = 0.32f), PillShape),
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(fill)
-                        .height(3.dp)
-                        .background(Color.White, PillShape),
-                )
-            }
-        }
-    }
 }

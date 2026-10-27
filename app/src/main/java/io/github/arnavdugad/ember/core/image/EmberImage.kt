@@ -66,15 +66,31 @@ fun EmberImage(
 }
 
 /**
- * Dominant color of a photo via the Palette API, used to tint the ambient glow behind the swipe
- * deck. Works on a 96 px software copy so it costs a few milliseconds off the main thread.
+ * Colours sampled from photos via the Palette API: the dominant one tints the ambient glow behind
+ * the swipe deck, a few vivid ones colour the match confetti. Works on a 96 px software copy so
+ * it costs a few milliseconds off the main thread.
  */
 @Singleton
 class PaletteExtractor @Inject constructor(@ApplicationContext private val context: Context) {
     private val cache = LruCache<String, Color>(128)
+    private val vividCache = LruCache<String, List<Color>>(16)
 
     suspend fun dominant(url: String): Color? {
         cache.get(url)?.let { return it }
+        val palette = palette(url) ?: return null
+        val swatch = palette.vibrantSwatch ?: palette.lightVibrantSwatch ?: palette.dominantSwatch ?: return null
+        return Color(swatch.rgb).also { cache.put(url, it) }
+    }
+
+    /** Up to three vivid colours from the photo, or empty when it has none (or won't load). */
+    suspend fun vivid(url: String): List<Color> {
+        vividCache.get(url)?.let { return it }
+        val palette = palette(url) ?: return emptyList()
+        val swatches = palette.swatches.map { PhotoSwatch(it.rgb, it.population) }
+        return pickVividColors(swatches).map { Color(it) }.also { vividCache.put(url, it) }
+    }
+
+    private suspend fun palette(url: String): Palette? {
         val request = ImageRequest.Builder(context)
             .data(url)
             .size(Size(96, 96))
@@ -82,9 +98,7 @@ class PaletteExtractor @Inject constructor(@ApplicationContext private val conte
             .build()
         val result = SingletonImageLoader.get(context).execute(request) as? SuccessResult ?: return null
         return withContext(Dispatchers.Default) {
-            val palette = Palette.from(result.image.toBitmap()).maximumColorCount(12).generate()
-            val swatch = palette.vibrantSwatch ?: palette.lightVibrantSwatch ?: palette.dominantSwatch ?: return@withContext null
-            Color(swatch.rgb)
-        }?.also { cache.put(url, it) }
+            Palette.from(result.image.toBitmap()).maximumColorCount(16).generate()
+        }
     }
 }

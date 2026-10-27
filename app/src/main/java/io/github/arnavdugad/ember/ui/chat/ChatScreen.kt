@@ -64,6 +64,7 @@ import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
+import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.data.ai.AiProvider
 import io.github.arnavdugad.ember.data.model.Match
@@ -115,6 +116,10 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
     val list = messages.orEmpty()
     val otherUid = m?.otherUid
     val myUid = m?.myUid.orEmpty()
+    val arrivals = remember { BubbleArrivals() }
+    val reduceMotion = rememberReduceMotion()
+    // Noted during composition, so a new bubble already knows to pop on its first frame.
+    remember(messages) { messages?.let { arrivals.observe(it.map(Message::id), SystemClock.uptimeMillis()) } }
 
     // Typing dots -> message: remember when the dots were last up, and let the next incoming
     // message that lands within the window grow out of them instead of popping in.
@@ -216,6 +221,10 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                         highlighted = message.id == highlightId,
                         // Offer the quick answers until I've said anything after their suggestion.
                         showDateReplies = !mine && message.type == MessageType.Date && list.subList(0, index).none { it.senderId != otherUid },
+                        // New arrivals pop, unless theirs is about to grow out of the typing dots.
+                        popIn = !reduceMotion && remember(message.id) {
+                            arrivals.consume(message.id) && (mine || !typingSeen || !typing && SystemClock.uptimeMillis() - typingSeenAt >= MORPH_WINDOW_MS)
+                        },
                         modifier = Modifier.animateItem(
                             placementSpec = spring(dampingRatio = 0.85f, stiffness = 420f, visibilityThreshold = IntOffset.VisibilityThreshold),
                         ),
