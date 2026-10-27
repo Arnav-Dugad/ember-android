@@ -1,0 +1,119 @@
+name: Release
+
+# `git tag -a v1.2.3 -m "notes" && git push origin v1.2.3` builds a signed APK and publishes it.
+# Put [mandatory] anywhere in the tag message to make the in-app updater require the update.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Derive version from the tag
+        id: version
+        run: |
+          NAME="${GITHUB_REF_NAME#v}"
+          if ! [[ "$NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag must look like v1.2.3 (got $GITHUB_REF_NAME)"; exit 1
+          fi
+          IFS=. read -r MAJOR MINOR PATCH <<< "$NAME"
+          # Monotonic: 1.2.3 -> 10203. Android refuses to install a lower versionCode over a higher one.
+          CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Tag message (optional release notes)
+        id: notes
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME" || true
+          BODY=""
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" = "tag" ]; then
+            BODY=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME")
+            SUBJECT=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
+            BODY=$(printf '%s\n\n%s' "$SUBJECT" "$BODY")
+          fi
+          {
+            echo "body<<EMBER_NOTES"
+            echo "$BODY"
+            echo "EMBER_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Restore the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          # Every release must be signed with the same key or updates won't install over the old app.
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is missing. See docs/RELEASING.md."; exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ember-release.jks"
+
+      - name: Restore google-services.json (optional)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json
+            echo "Building with Firebase."
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON is not set: this release runs in offline Preview mode."
+          fi
+
+      - name: Build the signed APK
+        env:
+          EMBER_KEYSTORE_PATH: ${{ runner.temp }}/ember-release.jks
+          EMBER_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          EMBER_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          EMBER_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon \
+            -PversionName=${{ steps.version.outputs.name }} \
+            -PversionCode=${{ steps.version.outputs.code }}
+
+      - name: Verify signature and checksum
+        id: apk
+        run: |
+          OUT="Ember-v${{ steps.version.outputs.name }}.apk"
+          mv app/build/outputs/apk/release/app-release.apk "$OUT"
+          SIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$SIGNER" verify --print-certs "$OUT" | tee signer.txt
+          if grep -q "CN=Android Debug" signer.txt; then
+            echo "::error::APK is debug-signed. Check the KEYSTORE_* secrets."; exit 1
+          fi
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+          echo "sha=$(sha256sum "$OUT" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ember ${{ steps.version.outputs.name }}
+          files: ${{ steps.apk.outputs.file }}
+          generate_release_notes: true
+          body: |
+            ${{ steps.notes.outputs.body }}
+
+            **[Download the APK](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.apk.outputs.file }})**
+
+            <!-- Read by the in-app updater. -->
+            versionCode: ${{ steps.version.outputs.code }}
+            sha256: ${{ steps.apk.outputs.sha }}
