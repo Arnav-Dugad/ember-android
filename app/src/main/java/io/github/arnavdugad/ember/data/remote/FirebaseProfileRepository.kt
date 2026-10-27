@@ -2,7 +2,9 @@ package io.github.arnavdugad.ember.data.remote
 
 import android.content.Context
 import android.net.Uri
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
@@ -15,6 +17,7 @@ import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.UnderageException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -23,6 +26,10 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 import javax.inject.Inject
@@ -159,5 +166,55 @@ class FirebaseProfileRepository @Inject constructor(
         }
     }
 
+    override suspend fun setFreeTonight(enabled: Boolean) {
+        val uid = auth.requireUid()
+        val until: Any = if (enabled) Timestamp(Instant.now().plus(FREE_TONIGHT)) else FieldValue.delete()
+        users.document(uid).update(account.profileFields(mapOf("freeTonightUntil" to until))).await()
+    }
+
+    /** One clip per user at `voices/{uid}`: bytes in a document, like photos (no Storage on Spark). */
+    override suspend fun uploadVoice(file: File, durationMs: Int) {
+        val uid = auth.requireUid()
+        val bytes = withContext(Dispatchers.IO) { file.readBytes() }
+        require(bytes.isNotEmpty() && bytes.size <= MAX_VOICE_BYTES) { "That recording is too large." }
+        db.collection("voices").document(uid).set(
+            mapOf(
+                "owner" to uid,
+                "data" to Blob.fromBytes(bytes),
+                "durationMs" to durationMs,
+                "createdAt" to FieldValue.serverTimestamp(),
+            ),
+        ).await()
+        // Our own clip plays from the fresh recording, not a stale cached download.
+        withContext(Dispatchers.IO) { file.copyTo(voiceCache(uid), overwrite = true) }
+    }
+
+    override suspend fun deleteVoice() {
+        val uid = auth.requireUid()
+        db.collection("voices").document(uid).delete().await()
+        withContext(Dispatchers.IO) { voiceCache(uid).delete() }
+    }
+
+    override suspend fun voiceFile(uid: String): File? {
+        val target = voiceCache(uid)
+        val snapshot = runCatching { db.collection("voices").document(uid).get().await() }.getOrNull()
+        val bytes = snapshot?.getBlob("data")?.toBytes()
+        return withContext(Dispatchers.IO) {
+            when {
+                bytes != null -> target.apply { writeBytes(bytes) }
+                snapshot != null && !snapshot.exists() -> null
+                target.exists() -> target
+                else -> null
+            }
+        }
+    }
+
+    private fun voiceCache(uid: String) = File(context.cacheDir, "voices").apply { mkdirs() }.resolve("${uid.filter { it.isLetterOrDigit() || it == '-' || it == '_' }}.m4a")
+
     private fun matchOnlyRef(uid: String) = users.document(uid).collection("matchOnly").document("details")
+
+    private companion object {
+        val FREE_TONIGHT: Duration = Duration.ofHours(6)
+        const val MAX_VOICE_BYTES = 880 * 1024
+    }
 }

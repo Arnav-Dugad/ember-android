@@ -37,9 +37,13 @@ class FirebaseSafetyRepository @Inject constructor(
         match.delete().await()
     }
 
+    /** The block, plus `users/{them}/hiddenBy/{me}` so their deck drops me too (rules need both in one batch). */
     override suspend fun block(uid: String) {
         val me = auth.requireUid()
-        users.document(me).collection("blocks").document(uid).set(mapOf("createdAt" to FieldValue.serverTimestamp())).await()
+        val batch = db.batch()
+        batch.set(users.document(me).collection("blocks").document(uid), mapOf("createdAt" to FieldValue.serverTimestamp()))
+        batch.set(users.document(uid).collection("hiddenBy").document(me), mapOf("createdAt" to FieldValue.serverTimestamp()))
+        batch.commit().await()
         val matchId = listOf(me, uid).sorted().joinToString("_")
         if (db.collection("matches").document(matchId).get().await().exists()) unmatch(matchId)
     }
@@ -86,7 +90,14 @@ class FirebaseSafetyRepository @Inject constructor(
                 runCatching { swipe.reference.delete().await() }
             }
         }
+        // The hiddenBy entries this user wrote: the targets are its own blocks.
+        runCatching {
+            me.collection("blocks").get().await().documents.forEach { block ->
+                runCatching { users.document(block.id).collection("hiddenBy").document(uid).delete().await() }
+            }
+        }
         runCatching { deleteAll(me.collection("blocks")) }
+        runCatching { db.collection("voices").document(uid).delete().await() }
         runCatching { deleteAll(db.collection("albums").document(uid).collection("access")) }
         runCatching { deleteAll(db.collection("albums").document(uid).collection("photos")) }
         runCatching {

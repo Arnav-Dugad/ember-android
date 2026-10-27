@@ -63,9 +63,25 @@ data class Profile(
     val onboarded: Boolean = false,
     val lat: Double? = null,
     val lng: Double? = null,
+    /** "Free tonight" until this moment; null or past means not. */
+    val freeTonightUntil: Instant? = null,
+    /** Length of their voice intro, or null when they haven't recorded one. */
+    val voiceDurationMs: Int? = null,
 ) {
     val firstPhoto: Photo? get() = photos.firstOrNull()
+
+    val hasVoice: Boolean get() = voiceDurationMs != null
+
+    fun isFreeTonight(now: Instant = Instant.now()): Boolean = freeTonightUntil?.isAfter(now) == true
 }
+
+/** A named point at city precision (two decimals), from the city picker or travel mode. */
+@Immutable
+data class Place(val name: String, val lat: Double, val lng: Double)
+
+/** Someone who liked you ("Likes you"). Their profile is fetched separately by id. */
+@Immutable
+data class Admirer(val uid: String, val superLike: Boolean, val likedAt: Instant?)
 
 /** Boundaries and turn-ons: only ever shown to people you've matched with. */
 @Immutable
@@ -87,6 +103,7 @@ data class ProfileDraft(
     val lat: Double? = null,
     val lng: Double? = null,
     val afterDark: Boolean = false,
+    val voiceDurationMs: Int? = null,
     val matchOnly: MatchOnlyDetails = MatchOnlyDetails(),
 )
 
@@ -105,6 +122,7 @@ fun Profile.toDraft(matchOnly: MatchOnlyDetails?) = ProfileDraft(
     lat = lat,
     lng = lng,
     afterDark = afterDark,
+    voiceDurationMs = voiceDurationMs,
     matchOnly = matchOnly ?: MatchOnlyDetails(),
 )
 
@@ -203,6 +221,9 @@ data class DiscoveryFilters(
     val minAge: Int = 18,
     val maxAge: Int = 45,
     val lookingFor: Set<LookingFor> = emptySet(),
+    val freeTonightOnly: Boolean = false,
+    /** Travel mode: distances and nearby-first ordering start here instead of at your city. */
+    val browseFrom: Place? = null,
 )
 
 enum class ReportReason(val key: String, val label: String) {

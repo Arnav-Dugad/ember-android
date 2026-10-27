@@ -3,6 +3,7 @@ package io.github.arnavdugad.ember.data.repo
 import android.app.Activity
 import android.net.Uri
 import io.github.arnavdugad.ember.data.model.AccessStatus
+import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
 import io.github.arnavdugad.ember.data.model.AuthUser
@@ -17,6 +18,7 @@ import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.ReportReason
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 import java.time.LocalDate
 
 /** Which backend the app is talking to. Preview is the offline, in-memory demo. */
@@ -58,6 +60,16 @@ interface ProfileRepository {
     /** Readable only when matched with [uid]; null otherwise. */
     suspend fun getMatchOnly(uid: String): MatchOnlyDetails?
     suspend fun touchLastActive()
+
+    /** Shows the "Free tonight" badge for the next six hours, or clears it. */
+    suspend fun setFreeTonight(enabled: Boolean)
+
+    /** Stores a recorded voice intro (AAC/MPEG-4). The profile's `voiceDurationMs` is written on save. */
+    suspend fun uploadVoice(file: File, durationMs: Int)
+    suspend fun deleteVoice()
+
+    /** [uid]'s voice intro as a local file, fetched on demand; null when there is none. */
+    suspend fun voiceFile(uid: String): File?
 }
 
 interface DiscoveryRepository {
@@ -66,6 +78,9 @@ interface DiscoveryRepository {
 
     /** True if the swipe was undone. Fails if it already produced a match. */
     suspend fun rewind(targetUid: String): Boolean
+
+    /** People who liked me ("Likes you"), newest first, minus anyone blocked either way. */
+    fun observeLikesYou(): Flow<List<Admirer>>
 }
 
 interface MatchRepository {

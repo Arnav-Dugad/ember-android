@@ -14,6 +14,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.Duration
+import java.time.Instant
 import kotlin.random.Random
 
 @Serializable
@@ -83,6 +85,13 @@ internal class DemoContent(
 internal object DemoData {
     data class DemoPerson(val profile: Profile, val likesBack: Boolean, val matchOnly: MatchOnlyDetails)
 
+    /** About a quarter of the cast is "free tonight", for a few more hours from when the demo starts. */
+    private fun freeTonight(uid: String): Instant? {
+        // Its own seed, so adding this didn't reshuffle who likes back.
+        val random = Random(uid.hashCode())
+        return if (random.nextInt(4) == 0) Instant.now().plus(Duration.ofMinutes(60L + random.nextInt(300))) else null
+    }
+
     const val PORTRAIT_BASE = "https://cdn.jsdelivr.net/gh/Arnav-Dugad/ember-android@main/firebase/seed/portraits/"
 
     private val womenNames = listOf(
@@ -137,7 +146,8 @@ internal object DemoData {
                 lat = p.lat,
                 lng = p.lng,
             )
-            DemoPerson(profile, likesBack = random.nextInt(100) < 55, matchOnly = MatchOnlyDetails(p.boundaries, p.turnOns))
+            val likesBack = random.nextInt(100) < 55
+            DemoPerson(profile.copy(freeTonightUntil = freeTonight(uid)), likesBack, matchOnly = MatchOnlyDetails(p.boundaries, p.turnOns))
         }
     }
 
@@ -198,6 +208,7 @@ internal object DemoData {
                 privateAlbumCount = if (random.nextInt(3) == 0) 2 + random.nextInt(5) else 0,
                 isDemo = true,
                 onboarded = true,
+                freeTonightUntil = freeTonight(uid),
             )
             DemoPerson(
                 profile = profile,
