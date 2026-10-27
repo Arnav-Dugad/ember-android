@@ -80,6 +80,9 @@ class FirebaseProfileRepository @Inject constructor(
             throw UnderageException()
         }
         require(age <= Ages.MAXIMUM) { "Please check your date of birth." }
+        // A profile can already exist (an earlier session, or an interrupted account deletion).
+        // Then only its age changes: the rules forbid rewriting createdAt, and onboarding stays done.
+        val profileExists = users.document(user.uid).get().await().exists()
         val batch = db.batch()
         batch.set(
             account.accountRef(user.uid),
@@ -91,17 +94,20 @@ class FirebaseProfileRepository @Inject constructor(
                 "termsAcceptedAt" to FieldValue.serverTimestamp(),
             ),
         )
-        batch.set(
-            users.document(user.uid),
-            mapOf(
-                "uid" to user.uid,
-                "age" to age,
-                "onboarded" to false,
-                "createdAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp(),
-            ),
-            SetOptions.merge(),
-        )
+        if (profileExists) {
+            batch.update(users.document(user.uid), mapOf("age" to age, "updatedAt" to FieldValue.serverTimestamp()))
+        } else {
+            batch.set(
+                users.document(user.uid),
+                mapOf(
+                    "uid" to user.uid,
+                    "age" to age,
+                    "onboarded" to false,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                ),
+            )
+        }
         batch.commit().await()
         account.remember(user.uid, birthDate)
         return age

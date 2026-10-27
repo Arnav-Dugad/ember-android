@@ -84,9 +84,9 @@ class AuthViewModel @Inject constructor(
     private fun friendly(e: Throwable): String? = when (e) {
         is GetCredentialCancellationException -> null
         is FirebaseAuthWeakPasswordException -> "That password is too easy to guess."
-        is FirebaseAuthUserCollisionException -> "There's already an account with that email. Try signing in."
+        is FirebaseAuthUserCollisionException -> "That email already has an account. Sign in, or use Continue with Google if that's how you joined."
         is FirebaseAuthInvalidUserException -> "We couldn't find that account."
-        is FirebaseAuthInvalidCredentialsException -> "That didn't match. Check and try again."
+        is FirebaseAuthInvalidCredentialsException -> "That didn't match. If you joined with Google, tap Continue with Google instead."
         is FirebaseNetworkException -> "You're offline. Check your connection."
         is androidx.credentials.exceptions.NoCredentialException -> "Add a Google account to this phone first, then try again."
         else -> e.message ?: "Something went wrong. Please try again."

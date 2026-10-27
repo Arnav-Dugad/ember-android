@@ -76,18 +76,23 @@ class FirebaseSafetyRepository @Inject constructor(
         account.accountRef(uid).delete().await()
         account.forget()
 
-        // 3. Everything else the user owns or created.
-        me.collection("swipes").get().await().documents.forEach { swipe ->
-            if (swipe.getString("direction") != "nope") {
-                runCatching { users.document(swipe.id).collection("likedBy").document(uid).delete().await() }
+        // 3. Everything else the user owns or created. Each step stands alone so one failure
+        //    can't leave the rest behind; the profile and login go last.
+        runCatching {
+            me.collection("swipes").get().await().documents.forEach { swipe ->
+                if (swipe.getString("direction") != "nope") {
+                    runCatching { users.document(swipe.id).collection("likedBy").document(uid).delete().await() }
+                }
+                runCatching { swipe.reference.delete().await() }
             }
-            swipe.reference.delete().await()
         }
-        deleteAll(me.collection("blocks"))
-        deleteAll(db.collection("albums").document(uid).collection("access"))
-        deleteAll(db.collection("albums").document(uid).collection("photos"))
-        val photos = me.get().await().data?.maps("photos").orEmpty()
-        photos.mapNotNull { FirestoreImages.pathOf(it.str("url")) }.forEach { path -> runCatching { db.document(path).delete().await() } }
+        runCatching { deleteAll(me.collection("blocks")) }
+        runCatching { deleteAll(db.collection("albums").document(uid).collection("access")) }
+        runCatching { deleteAll(db.collection("albums").document(uid).collection("photos")) }
+        runCatching {
+            val photos = me.get().await().data?.maps("photos").orEmpty()
+            photos.mapNotNull { FirestoreImages.pathOf(it.str("url")) }.forEach { path -> runCatching { db.document(path).delete().await() } }
+        }
         runCatching { me.collection("matchOnly").document("details").delete().await() }
         me.delete().await()
 
