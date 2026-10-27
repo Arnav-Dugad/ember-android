@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Downloaded update APKs, handed to the system installer. -->
+    <cache-path name="updates" path="updates/" />
+    <!-- Compressed images queued for upload. -->
+    <cache-path name="uploads" path="uploads/" />
+</paths>
