@@ -53,11 +53,18 @@ Readable (get and list) by any adult. List queries must have `limit <= 300`. Wri
 | `privateAlbumCount` | int | 0 to 12 |
 | `isDemo` | bool | clients may only write `false` or omit it; seeded profiles have `true` |
 | `onboarded` | bool | |
+| `freeTonightUntil` | timestamp or null | "Free tonight" badge. At most `request.time` + 6 h (plus 10 min of clock slack); the app writes now + 6 h, or deletes the field to turn it off |
+| `voiceDurationMs` | int or null | length of the voice intro in `voices/{uid}`, 500 to 31000 (30 s plus slack). Absent or null when there is none |
 | `createdAt`, `updatedAt`, `lastActiveAt` | timestamp | |
 
 ### `images/{imageId}` (public profile photos)
 `{ owner, data: bytes (JPEG, at most 900 KB), createdAt }`. Readable by any adult. The owner
 creates and deletes; no updates.
+
+### `voices/{uid}` (voice intro)
+`{ owner == uid, data: bytes (AAC in MPEG-4, mono, about 32 kbps; at most 900 KB), durationMs: int (500 to 31000), createdAt == request.time }`.
+One clip per user, overwritten on re-record. Readable (get only) by the owner and by adults the
+owner hasn't blocked. The owner creates, updates and deletes.
 
 ### `users/{uid}/matchOnly/details`
 `{ boundaries: string[], turnOns: string[] }`. Readable by `uid` and by users matched with
@@ -70,11 +77,18 @@ reads. The owner may delete (rewind) within 10 minutes of `createdAt`, and only 
 
 ### `users/{targetUid}/likedBy/{likerUid}`
 `{ createdAt == request.time, super: bool }`. Created by the liker (`auth.uid == likerUid`), who
-may also delete it (rewind, account deletion). **Nobody can read these docs**; rules use
+may also delete it (rewind, account deletion). **Only `targetUid` (a verified adult) can read
+them** (get and list), for the "Likes you" screen; nobody else, not even the liker. Rules also use
 `exists()` on them to authorize match creation.
 
 ### `users/{uid}/blocks/{targetUid}`
 `{ createdAt }`. The owner creates, reads and deletes.
+
+### `users/{uid}/hiddenBy/{blockerUid}`
+`{ createdAt == request.time }`. Written by the blocker (`auth.uid == blockerUid`) in the same
+batch as their block (`existsAfter(users/{blockerUid}/blocks/{uid})`), so the blocked person's
+deck drops the blocker too. Readable by `uid` only; deletable by the blocker only (account
+deletion); never updated.
 
 ### `demoMeta/{uid}`
 `{ likesBack: bool }`. Written only by the seed script (Admin SDK). Nobody can read it.
@@ -132,17 +146,30 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
 ## Client-side flows
 
 - **Discovery:** query `users` with `onboarded == true`, ordered by `lastActiveAt` descending,
-  limit 300 (composite index). The client then drops itself, swiped and blocked people, and
-  hidden demos, and filters by age, distance, mutual gender interest, lookingFor and After Dark.
+  limit 300 (composite index). The client then drops itself, swiped and blocked people, people in
+  its own `hiddenBy` (who blocked it), and hidden demos, and filters by age, distance, mutual
+  gender interest, lookingFor, After Dark and (optionally) "free tonight only".
+  - **Travel mode** ("Browse from" a city) is device-local: distances and nearby-first ordering
+    use that city's coordinates instead of the profile's. Nothing is written to Firestore.
+  - **Today's picks** are chosen on the device from the same candidates: five people scored by
+    shared interests (x2), shared vibes (x2), the same `lookingFor` (x3) and a distance bonus, seeded
+    by the date and uid. A new set appears at 6 pm local time (before that, yesterday's set shows),
+    and the chosen uids are remembered on the device so the set stays stable all day.
 - **Like:**
   1. Write the swipe and `users/{target}/likedBy/{me}`.
   2. Try to create the match. The rules reject it until the like is mutual (or the target is a
      demo that likes back), so a permission error here just means "no match yet".
   3. When the other person likes back, their client creates the match.
+  - **Offline:** the batch is committed without waiting for the server (Firestore keeps pending
+    writes and sends them later), and the match attempt is retried on the next deck load once the
+    device is back online.
+- **Likes you:** the owner lists `users/{me}/likedBy` and fetches each profile by id. Faces stay
+  blurred until you match; super likes wear a blue star.
 - **Unmatch:** delete the messages, chat images, typing docs and match doc, plus album access both ways.
-- **Block:** write the block doc, then unmatch.
+- **Block:** write the block doc and `users/{them}/hiddenBy/{me}` in one batch, then unmatch.
 - **Delete account:** client-side deletes of everything the user owns or created (see
-  `FirebaseSafetyRepository`), then `FirebaseUser.delete()`. Reports are kept.
+  `FirebaseSafetyRepository`), including `voices/{uid}` and the `hiddenBy` entries it wrote (the
+  targets come from its own `blocks`), then `FirebaseUser.delete()`. Reports are kept.
 
 ## Remote Config
 

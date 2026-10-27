@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  Bytes, collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc,
-  updateDoc, where, writeBatch,
+  Bytes, Timestamp, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp,
+  setDoc, updateDoc, where, writeBatch,
 } from "firebase/firestore";
 
 const ALICE = "alice";
@@ -141,6 +141,27 @@ describe("profiles", () => {
     await assertFails(updateDoc(doc(db(EVE), "users/alice"), { bio: "pwned" }));
   });
 
+  test("free tonight lasts at most six hours", async () => {
+    const fs = db(ALICE);
+    const inHours = (h) => Timestamp.fromMillis(Date.now() + h * 3600_000);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: inHours(6) }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: inHours(2) }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: null }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: deleteField() }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: inHours(7) }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { freeTonightUntil: "tonight" }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { freeTonightUntil: inHours(1) }));
+  });
+
+  test("voice intro duration is an int up to 30 s", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { voiceDurationMs: 12_000 }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { voiceDurationMs: null }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { voiceDurationMs: 45_000 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { voiceDurationMs: 0 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { voiceDurationMs: "12s" }));
+  });
+
   test("blocked users cannot get the blocker", async () => {
     await seed((fs) => setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() }));
     await assertFails(getDoc(doc(db(EVE), "users/alice")));
@@ -199,12 +220,52 @@ describe("swipes and likes", () => {
     await assertSucceeds(deleteDoc(doc(fs, "users/alice/swipes/old")));
   });
 
-  test("likedBy is written by the liker and readable by nobody", async () => {
+  test("likedBy is written by the liker and readable only by the liked person", async () => {
     await assertSucceeds(setDoc(doc(db(EVE), "users/alice/likedBy/eve"), { createdAt: serverTimestamp(), super: false }));
     await assertFails(setDoc(doc(db(EVE), "users/alice/likedBy/bob"), { createdAt: serverTimestamp(), super: false }));
-    await assertFails(getDoc(doc(db(ALICE), "users/alice/likedBy/eve")));
-    await assertFails(getDocs(collection(db(ALICE), "users/alice/likedBy")));
+    // "Likes you": the owner can get and list.
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice/likedBy/eve")));
+    await assertSucceeds(getDocs(collection(db(ALICE), "users/alice/likedBy")));
+    // Nobody else, including the liker, and not before the age gate.
+    await assertFails(getDoc(doc(db(EVE), "users/alice/likedBy/eve")));
+    await assertFails(getDocs(collection(db(BOB), "users/alice/likedBy")));
+    await assertFails(getDocs(collection(db("stranger"), "users/stranger/likedBy")));
+    await assertFails(updateDoc(doc(db(ALICE), "users/alice/likedBy/eve"), { super: true }));
+    await assertFails(deleteDoc(doc(db(ALICE), "users/alice/likedBy/eve")));
     await assertSucceeds(deleteDoc(doc(db(EVE), "users/alice/likedBy/eve")));
+  });
+});
+
+describe("voice intros", () => {
+  const voice = (owner, extra = {}) => ({ owner, data: jpeg(64 * 1024), durationMs: 14_000, createdAt: serverTimestamp(), ...extra });
+
+  test("owners write one clip of up to 900 KB and 30 s", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(setDoc(doc(fs, "voices/alice"), voice(ALICE)));
+    await assertSucceeds(setDoc(doc(fs, "voices/alice"), voice(ALICE, { durationMs: 30_000 }))); // re-record
+    await assertFails(setDoc(doc(fs, "voices/alice"), voice(ALICE, { data: jpeg(901 * 1024) })));
+    await assertFails(setDoc(doc(fs, "voices/alice"), voice(ALICE, { durationMs: 60_000 })));
+    await assertFails(setDoc(doc(fs, "voices/alice"), voice(ALICE, { createdAt: new Date(0) })));
+    await assertFails(setDoc(doc(fs, "voices/alice"), voice(ALICE, { transcript: "hi" })));
+    await assertFails(setDoc(doc(fs, "voices/bob"), voice(BOB)));
+    await assertFails(setDoc(doc(fs, "voices/bob"), voice(ALICE)));
+    await assertFails(setDoc(doc(db("stranger"), "voices/stranger"), voice("stranger")));
+  });
+
+  test("adults play them; blocked users, strangers and listing cannot", async () => {
+    await seed((fs) => setDoc(doc(fs, "voices/alice"), { owner: ALICE, data: jpeg(10), durationMs: 5_000, createdAt: new Date() }));
+    await assertSucceeds(getDoc(doc(db(BOB), "voices/alice")));
+    await assertSucceeds(getDoc(doc(db(ALICE), "voices/alice")));
+    await assertFails(getDoc(doc(db("stranger"), "voices/alice")));
+    await assertFails(getDocs(query(collection(db(BOB), "voices"), limit(10))));
+    await seed((fs) => setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() }));
+    await assertFails(getDoc(doc(db(EVE), "voices/alice")));
+  });
+
+  test("only the owner deletes", async () => {
+    await seed((fs) => setDoc(doc(fs, "voices/alice"), { owner: ALICE, data: jpeg(10), durationMs: 5_000, createdAt: new Date() }));
+    await assertFails(deleteDoc(doc(db(BOB), "voices/alice")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "voices/alice")));
   });
 });
 
@@ -375,6 +436,41 @@ describe("safety", () => {
     await assertFails(setDoc(doc(db(EVE), "users/alice/blocks/bob"), { createdAt: serverTimestamp() }));
     await assertFails(getDoc(doc(db(EVE), "users/alice/blocks/eve")));
     await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/blocks/eve")));
+  });
+
+  test("hiddenBy is written by the blocker, with the block, and read by the blocked person", async () => {
+    // Without a block it is rejected.
+    await assertFails(setDoc(doc(db(ALICE), "users/eve/hiddenBy/alice"), { createdAt: serverTimestamp() }));
+    // Block and hide in one batch.
+    const fs = db(ALICE);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/alice/blocks/eve"), { createdAt: serverTimestamp() });
+    batch.set(doc(fs, "users/eve/hiddenBy/alice"), { createdAt: serverTimestamp() });
+    await assertSucceeds(batch.commit());
+    // Strict fields, server time, no impersonation, no self-entries.
+    await assertFails(setDoc(doc(db(ALICE), "users/eve/hiddenBy/alice"), { createdAt: new Date(0) }));
+    await assertFails(setDoc(doc(db(ALICE), "users/eve/hiddenBy/alice"), { createdAt: serverTimestamp(), note: "x" }));
+    await assertFails(setDoc(doc(db(ALICE), "users/eve/hiddenBy/bob"), { createdAt: serverTimestamp() }));
+    await seed((s) => setDoc(doc(s, "users/alice/blocks/alice"), { createdAt: new Date() }));
+    await assertFails(setDoc(doc(db(ALICE), "users/alice/hiddenBy/alice"), { createdAt: serverTimestamp() }));
+    // Only the parent owner reads (so their deck can drop the blocker).
+    await assertSucceeds(getDocs(collection(db(EVE), "users/eve/hiddenBy")));
+    await assertSucceeds(getDoc(doc(db(EVE), "users/eve/hiddenBy/alice")));
+    await assertFails(getDoc(doc(db(ALICE), "users/eve/hiddenBy/alice")));
+    await assertFails(getDocs(collection(db(BOB), "users/eve/hiddenBy")));
+    // Only the creator deletes (account deletion), and nobody edits.
+    await assertFails(updateDoc(doc(db(ALICE), "users/eve/hiddenBy/alice"), { createdAt: serverTimestamp() }));
+    await assertFails(deleteDoc(doc(db(EVE), "users/eve/hiddenBy/alice")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/eve/hiddenBy/alice")));
+  });
+
+  test("account deletion can clear hiddenBy entries after the account doc is gone", async () => {
+    await seed(async (fs) => {
+      await setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() });
+      await setDoc(doc(fs, "users/eve/hiddenBy/alice"), { createdAt: new Date() });
+      await deleteDoc(doc(fs, "users/alice/private/account"));
+    });
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/eve/hiddenBy/alice")));
   });
 
   test("reports are create-only", async () => {
