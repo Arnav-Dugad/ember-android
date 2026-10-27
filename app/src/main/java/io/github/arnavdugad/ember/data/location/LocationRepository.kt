@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.core.util.Geo
+import io.github.arnavdugad.ember.data.model.Place
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -59,30 +60,50 @@ class LocationRepository @Inject constructor(@ApplicationContext private val con
 
     /** Approximate centre of a typed city name, rounded to city level. Null if unknown. */
     suspend fun locate(city: String): CityLocation? {
-        if (city.isBlank() || !Geocoder.isPresent()) return null
+        if (city.isBlank()) return null
+        val address = geocode(city, 1).firstOrNull() ?: return null
+        return CityLocation(city.trim(), Geo.coarse(address.latitude), Geo.coarse(address.longitude))
+    }
+
+    /**
+     * The city picker: bundled popular cities first (instant, offline), then the Geocoder for
+     * anywhere else once the query is specific enough. Coordinates are rounded to city level.
+     */
+    suspend fun searchCities(query: String): List<CitySuggestion> {
+        val local = Cities.search(query)
+        if (query.trim().length < 3 || local.size >= 8) return local
+        val remote = geocode(query.trim(), 6).mapNotNull { a ->
+            val name = a.locality ?: a.subAdminArea ?: a.featureName?.takeIf { it.any(Char::isLetter) } ?: return@mapNotNull null
+            val detail = listOfNotNull(a.adminArea?.takeIf { it != name }, a.countryName).joinToString(", ")
+            CitySuggestion(Place(name, Geo.coarse(a.latitude), Geo.coarse(a.longitude)), detail)
+        }
+        val seen = local.map { it.place.name.lowercase() }.toMutableSet()
+        return local + remote.filter { seen.add(it.place.name.lowercase()) }
+    }
+
+    private suspend fun geocode(query: String, max: Int): List<Address> {
+        if (!Geocoder.isPresent()) return emptyList()
         val geocoder = Geocoder(context, Locale.getDefault())
-        val address: Address? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             withTimeoutOrNull(8_000) {
                 suspendCancellableCoroutine { cont ->
-                    geocoder.getFromLocationName(city, 1, object : Geocoder.GeocodeListener {
+                    geocoder.getFromLocationName(query, max, object : Geocoder.GeocodeListener {
                         override fun onGeocode(addresses: MutableList<Address>) {
-                            if (cont.isActive) cont.resume(addresses.firstOrNull())
+                            if (cont.isActive) cont.resume(addresses.toList())
                         }
 
                         override fun onError(errorMessage: String?) {
-                            if (cont.isActive) cont.resume(null)
+                            if (cont.isActive) cont.resume(emptyList())
                         }
                     })
                 }
-            }
+            } ?: emptyList()
         } else {
             withContext(Dispatchers.IO) {
                 @Suppress("DEPRECATION")
-                runCatching { geocoder.getFromLocationName(city, 1)?.firstOrNull() }.getOrNull()
+                runCatching { geocoder.getFromLocationName(query, max).orEmpty() }.getOrDefault(emptyList())
             }
         }
-        address ?: return null
-        return CityLocation(city.trim(), Geo.coarse(address.latitude), Geo.coarse(address.longitude))
     }
 
     private suspend fun cityName(lat: Double, lng: Double): String? {

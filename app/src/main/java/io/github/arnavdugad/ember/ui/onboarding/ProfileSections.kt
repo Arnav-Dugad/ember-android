@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.LocationCity
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.NightsStay
@@ -47,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.arnavdugad.ember.core.designsystem.EmberButton
 import io.github.arnavdugad.ember.core.designsystem.EmberChip
@@ -348,6 +350,7 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) vm.locate()
     }
+    var pickerOpen by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         EmberButton(
             if (state.draft.lat != null) "Update my city" else "Use my location",
@@ -356,7 +359,7 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
             icon = Icons.Rounded.MyLocation,
             modifier = Modifier.fillMaxWidth(),
         )
-        EmberTextField(state.draft.city, vm::setCity, label = "City", placeholder = "Or type your city", maxLength = 80)
+        CityField(city = state.draft.city, onClick = { pickerOpen = true })
         Text(
             "Ember uses approximate location (about 1 km), rounds it, and shows only your city and a rough distance.",
             style = EmberTheme.type.caption,
@@ -364,6 +367,40 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
         )
         Spacer(Modifier.height(4.dp))
         AfterDarkOptIn(checked = state.draft.afterDark, onChange = vm::setAfterDark)
+    }
+    CityPickerSheet(
+        visible = pickerOpen,
+        title = "Your city",
+        subtitle = "Only the city shows on your profile.",
+        onPick = {
+            vm.setPlace(it)
+            pickerOpen = false
+        },
+        onDismiss = { pickerOpen = false },
+        search = vm::searchCities,
+    )
+}
+
+/** Looks like a text field, opens the city picker. */
+@Composable
+private fun CityField(city: String, onClick: () -> Unit) {
+    val colors = EmberTheme.colors
+    Column {
+        Text("City", style = EmberTheme.type.caption, color = colors.textSecondary, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+        GlassSurface(Modifier.fillMaxWidth().pressable(onClick = onClick, pressedScale = 0.98f), shape = EmberShapes.field) {
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.LocationCity, contentDescription = null, tint = colors.textTertiary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    city.ifBlank { "Or choose your city" },
+                    style = EmberTheme.type.body,
+                    color = if (city.isBlank()) colors.textTertiary else colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }
 

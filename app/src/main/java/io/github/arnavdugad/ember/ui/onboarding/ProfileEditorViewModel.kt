@@ -4,10 +4,12 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.github.arnavdugad.ember.data.location.CitySuggestion
 import io.github.arnavdugad.ember.data.location.LocationRepository
 import io.github.arnavdugad.ember.data.model.Gender
 import io.github.arnavdugad.ember.data.model.LookingFor
 import io.github.arnavdugad.ember.data.model.Photo
+import io.github.arnavdugad.ember.data.model.Place
 import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.ProfilePrompt
 import io.github.arnavdugad.ember.data.model.PromptTemplate
@@ -74,7 +76,11 @@ class ProfileEditorViewModel @Inject constructor(
     fun setHeight(value: Int?) = edit { copy(heightCm = value) }
     fun setLookingFor(value: LookingFor) = edit { copy(lookingFor = value) }
     fun setAfterDark(value: Boolean) = edit { copy(afterDark = value) }
-    fun setCity(value: String) = edit { copy(city = value, lat = null, lng = null) }
+
+    /** From the city picker: the name plus city-level coordinates. */
+    fun setPlace(place: Place) = edit { copy(city = place.name, lat = place.lat, lng = place.lng) }
+
+    suspend fun searchCities(query: String): List<CitySuggestion> = location.searchCities(query)
 
     fun toggleVibe(key: String) = edit { copy(vibes = vibes.toggleCapped(key, EditorState.MAX_VIBES)) }
     fun toggleInterest(value: String) = edit { copy(interests = interests.toggleCapped(value, EditorState.MAX_INTERESTS)) }
@@ -123,7 +129,7 @@ class ProfileEditorViewModel @Inject constructor(
             val city = runCatching { location.currentCity() }.getOrNull()
             _state.update { s ->
                 if (city == null) {
-                    s.copy(locating = false, error = "Couldn't find your city. You can type it instead.")
+                    s.copy(locating = false, error = "Couldn't find your city. You can pick it from the list instead.")
                 } else {
                     s.copy(locating = false, draft = s.draft.copy(city = city.city, lat = city.lat, lng = city.lng))
                 }
