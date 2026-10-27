@@ -20,6 +20,7 @@ import io.github.arnavdugad.ember.data.preview.PreviewBackend
 import io.github.arnavdugad.ember.data.remote.FirebaseAlbumRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseAuthRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseDiscoveryRepository
+import io.github.arnavdugad.ember.data.remote.FirebaseGameRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseMatchRepository
 import io.github.arnavdugad.ember.data.remote.FirebasePrivacyRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseProfileRepository
@@ -28,6 +29,7 @@ import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
+import io.github.arnavdugad.ember.data.repo.GameRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
@@ -104,6 +106,11 @@ object AppModule {
     @Provides
     @Singleton
     fun privacy(mode: BackendMode, firebase: Provider<FirebasePrivacyRepository>, preview: Provider<PreviewBackend>): PrivacyRepository =
+        if (mode == BackendMode.Firebase) firebase.get() else preview.get()
+
+    @Provides
+    @Singleton
+    fun games(mode: BackendMode, firebase: Provider<FirebaseGameRepository>, preview: Provider<PreviewBackend>): GameRepository =
         if (mode == BackendMode.Firebase) firebase.get() else preview.get()
 
     @Provides
