@@ -175,7 +175,6 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     override suspend fun getMatchOnly(uid: String): MatchOnlyDetails? =
         if (matches.value.containsKey(matchId(uid))) peopleById[uid]?.matchOnly else null
 
-    override suspend fun registerPushToken(token: String) = Unit
     override suspend fun touchLastActive() = Unit
 
     // --- Discovery ---

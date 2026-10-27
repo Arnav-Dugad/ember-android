@@ -7,10 +7,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.github.arnavdugad.ember.core.util.Images
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.GameMode
 import io.github.arnavdugad.ember.data.model.LastMessage
@@ -22,10 +19,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.tasks.await
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,11 +28,9 @@ import javax.inject.Singleton
 class FirebaseMatchRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val db: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     @ApplicationContext private val context: Context,
 ) : MatchRepository {
     private val matches get() = db.collection("matches")
-    private val urlCache = ConcurrentHashMap<String, String>()
 
     override fun observeMatches(): Flow<List<Match>> = auth.uidFlow().flatMapLatest { uid ->
         if (uid == null) {
@@ -63,12 +56,7 @@ class FirebaseMatchRepository @Inject constructor(
             .orderBy("createdAt", Query.Direction.DESCENDING)
             .limit(300)
             .snapshots()
-            .mapLatest { snap ->
-                snap?.documents.orEmpty().map { doc ->
-                    val message = doc.toMessage()
-                    if (message.imagePath != null) message.copy(imageUrl = resolveUrl(message.imagePath)) else message
-                }
-            }
+            .map { snap -> snap?.documents.orEmpty().map { it.toMessage(matchId) } }
 
     override fun observeTyping(matchId: String, otherUid: String): Flow<Boolean> =
         matches.document(matchId).collection("typing").document(otherUid).snapshots().map { snap ->
@@ -88,49 +76,63 @@ class FirebaseMatchRepository @Inject constructor(
     }
 
     override suspend fun sendText(matchId: String, text: String) {
-        val ref = matches.document(matchId).collection("messages").document()
-        ref.set(messageData(MessageType.Text, text.trim())).await()
+        send(matchId, MessageType.Text, text.trim())
     }
 
+    /** The image goes into its own document (Firestore holds images on the free plan), then the message. */
     override suspend fun sendImage(matchId: String, uri: Uri, caption: String) {
-        val ref = matches.document(matchId).collection("messages").document()
-        val prepared = Images.prepare(context, uri, maxEdge = 1440)
-        val path = "chats/$matchId/${ref.id}.jpg"
-        storage.reference.child(path)
-            .putBytes(prepared.bytes, StorageMetadata.Builder().setContentType("image/jpeg").build())
-            .await()
-        ref.set(messageData(MessageType.Image, caption.trim(), imagePath = path, blurHash = prepared.blurHash)).await()
+        val image = FirestoreImages.prepare(context, uri)
+        val imageRef = matches.document(matchId).collection("images").document()
+        FirestoreImages.write(imageRef, image, mapOf("owner" to auth.requireUid()))
+        send(matchId, MessageType.Image, caption.trim(), imageId = imageRef.id, blurHash = image.blurHash)
     }
 
     override suspend fun sendGame(matchId: String, card: GameCard) {
-        val ref = matches.document(matchId).collection("messages").document()
-        ref.set(messageData(MessageType.Game, card.prompt, game = mapOf("mode" to card.mode.key, "prompt" to card.prompt))).await()
+        send(matchId, MessageType.Game, card.prompt, game = mapOf("mode" to card.mode.key, "prompt" to card.prompt))
+    }
+
+    /** Message and the match's `lastMessage` in one batch; there is no server trigger to do it. */
+    private suspend fun send(
+        matchId: String,
+        type: MessageType,
+        text: String,
+        imageId: String? = null,
+        blurHash: String? = null,
+        game: Map<String, String>? = null,
+    ) {
+        val uid = auth.requireUid()
+        val match = matches.document(matchId)
+        val batch = db.batch()
+        batch.set(
+            match.collection("messages").document(),
+            mapOf(
+                "senderId" to uid,
+                "type" to type.key,
+                "text" to text,
+                "imageId" to imageId,
+                "imageBlurhash" to blurHash,
+                "game" to game,
+                "createdAt" to FieldValue.serverTimestamp(),
+            ),
+        )
+        val preview = when (type) {
+            MessageType.Image -> text.ifBlank { "Photo" }
+            else -> text
+        }.take(200)
+        batch.update(
+            match,
+            mapOf(
+                "lastMessage" to mapOf("text" to preview, "senderId" to uid, "type" to type.key, "sentAt" to FieldValue.serverTimestamp()),
+                "lastRead.$uid" to FieldValue.serverTimestamp(),
+            ),
+        )
+        batch.commit().await()
     }
 
     override suspend fun markRead(matchId: String) {
         val uid = auth.currentUser?.uid ?: return
         runCatching { matches.document(matchId).update("lastRead.$uid", FieldValue.serverTimestamp()).await() }
     }
-
-    private fun messageData(
-        type: MessageType,
-        text: String,
-        imagePath: String? = null,
-        blurHash: String? = null,
-        game: Map<String, String>? = null,
-    ): Map<String, Any?> = mapOf(
-        "senderId" to auth.requireUid(),
-        "type" to type.key,
-        "text" to text,
-        "imagePath" to imagePath,
-        "imageBlurhash" to blurHash,
-        "game" to game,
-        "createdAt" to FieldValue.serverTimestamp(),
-    )
-
-    private suspend fun resolveUrl(path: String): String? = urlCache[path] ?: runCatching {
-        storage.reference.child(path).downloadUrl.await().toString()
-    }.getOrNull()?.also { urlCache[path] = it }
 
     private fun DocumentSnapshot.toMatch(myUid: String): Match? {
         val data = data ?: return null
@@ -161,14 +163,15 @@ class FirebaseMatchRepository @Inject constructor(
         )
     }
 
-    private fun DocumentSnapshot.toMessage(): Message {
+    private fun DocumentSnapshot.toMessage(matchId: String): Message {
         val game = (get("game") as? Map<*, *>)?.let { GameCard(GameMode.of(it.str("mode")), it.str("prompt").orEmpty()) }
         return Message(
             id = id,
             senderId = getString("senderId").orEmpty(),
             type = MessageType.of(getString("type")),
             text = getString("text").orEmpty(),
-            imagePath = getString("imagePath"),
+            imagePath = getString("imageId")?.let { "matches/$matchId/images/$it" },
+            imageUrl = getString("imageId")?.let { FirestoreImages.url("matches/$matchId/images/$it") },
             imageBlurHash = getString("imageBlurhash"),
             game = game,
             // Our own just-sent messages carry an estimated timestamp until the server confirms.

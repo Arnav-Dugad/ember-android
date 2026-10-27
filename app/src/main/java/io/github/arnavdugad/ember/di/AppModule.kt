@@ -4,8 +4,6 @@ import android.content.Context
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.storage.FirebaseStorage
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -32,7 +30,8 @@ import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
- * Picks the backend once per process. With a google-services.json the Firebase SDK initialises
+ * Picks the backend once per process (Firebase on the free Spark plan: Auth, Firestore, Remote
+ * Config). With a google-services.json the Firebase SDK initialises
  * itself and every repository talks to Firebase; without one the app runs on [PreviewBackend].
  * Firebase classes are behind [Provider]s so they are never touched in Preview mode (their
  * getInstance() would throw without a FirebaseApp).
@@ -48,10 +47,6 @@ object AppModule {
     @Provides fun firebaseAuth(): FirebaseAuth = FirebaseAuth.getInstance()
 
     @Provides fun firestore(): FirebaseFirestore = FirebaseFirestore.getInstance()
-
-    @Provides fun storage(): FirebaseStorage = FirebaseStorage.getInstance()
-
-    @Provides fun functions(): FirebaseFunctions = FirebaseFunctions.getInstance()
 
     @Provides
     @Singleton

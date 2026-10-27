@@ -6,14 +6,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.functions.FirebaseFunctionsException
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageMetadata
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.core.util.Geo
-import io.github.arnavdugad.ember.core.util.Images
+import io.github.arnavdugad.ember.data.model.Ages
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Photo
 import io.github.arnavdugad.ember.data.model.Profile
@@ -46,8 +41,7 @@ internal fun FirebaseAuth.requireUid(): String = currentUser?.uid ?: error("You'
 class FirebaseProfileRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val db: FirebaseFirestore,
-    private val storage: FirebaseStorage,
-    private val functions: FirebaseFunctions,
+    private val account: Account,
     @ApplicationContext private val context: Context,
 ) : ProfileRepository {
     private val users get() = db.collection("users")
@@ -63,8 +57,8 @@ class FirebaseProfileRepository @Inject constructor(
                 // server avoids flashing profile setup at someone who already has a profile.
                 .filter { snap -> snap == null || snap.exists() || !snap.metadata.isFromCache }
                 .map { snap ->
-                snap?.data?.toProfile(uid)?.also { p -> if (p.lat != null && p.lng != null) myLocation = p.lat to p.lng }
-            }
+                    snap?.data?.toProfile(uid)?.also { p -> if (p.lat != null && p.lng != null) myLocation = p.lat to p.lng }
+                }
         }
     }
 
@@ -72,60 +66,75 @@ class FirebaseProfileRepository @Inject constructor(
         if (uid == null) flowOf(null) else matchOnlyRef(uid).snapshots().map { it?.data?.toMatchOnly() }
     }
 
+    /**
+     * The age gate. Rules only accept the account document for a real birth date at least 18
+     * years ago, so this cannot be bypassed by a modified client. Under 18, the Auth user is
+     * deleted on the spot.
+     */
     override suspend fun completeAgeGate(birthDate: LocalDate, termsVersion: String): Int {
-        val result = try {
-            functions.call("completeAgeGate", mapOf("birthDate" to birthDate.toString(), "termsVersion" to termsVersion))
-        } catch (e: FirebaseFunctionsException) {
-            if (e.code == FirebaseFunctionsException.Code.FAILED_PRECONDITION && e.message.orEmpty().contains("underage")) {
-                runCatching { auth.signOut() }
-                throw UnderageException()
-            }
-            throw e
+        val user = auth.currentUser ?: error("You're signed out.")
+        val age = Ages.ageOn(birthDate, LocalDate.now())
+        if (age < Ages.MINIMUM) {
+            runCatching { user.delete().await() }
+            auth.signOut()
+            throw UnderageException()
         }
-        // The function granted the `adult` claim; refresh so rules see it immediately.
-        auth.currentUser?.getIdToken(true)?.await()
-        return result?.int("age") ?: 0
+        require(age <= Ages.MAXIMUM) { "Please check your date of birth." }
+        val batch = db.batch()
+        batch.set(
+            account.accountRef(user.uid),
+            mapOf(
+                "birthYear" to birthDate.year,
+                "birthMonth" to birthDate.monthValue,
+                "birthDay" to birthDate.dayOfMonth,
+                "termsVersion" to termsVersion,
+                "termsAcceptedAt" to FieldValue.serverTimestamp(),
+            ),
+        )
+        batch.set(
+            users.document(user.uid),
+            mapOf(
+                "uid" to user.uid,
+                "age" to age,
+                "onboarded" to false,
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+            SetOptions.merge(),
+        )
+        batch.commit().await()
+        account.remember(user.uid, birthDate)
+        return age
     }
 
     override suspend fun saveProfile(draft: ProfileDraft, finishOnboarding: Boolean) {
         val uid = auth.requireUid()
-        val ref = users.document(uid)
-        val existing = ref.get().await()
         val data = draft.toFirestore(uid).toMutableMap()
-        data["updatedAt"] = FieldValue.serverTimestamp()
         data["lastActiveAt"] = FieldValue.serverTimestamp()
-        if (!existing.contains("createdAt")) data["createdAt"] = FieldValue.serverTimestamp()
         if (finishOnboarding) data["onboarded"] = true
-        ref.set(data, SetOptions.merge()).await()
-        matchOnlyRef(uid).set(
-            mapOf("boundaries" to draft.matchOnly.boundaries, "turnOns" to draft.matchOnly.turnOns),
-        ).await()
+        users.document(uid).set(account.profileFields(data), SetOptions.merge()).await()
+        matchOnlyRef(uid).set(mapOf("boundaries" to draft.matchOnly.boundaries, "turnOns" to draft.matchOnly.turnOns)).await()
         if (draft.lat != null && draft.lng != null) myLocation = draft.lat to draft.lng
     }
 
     override suspend fun uploadPhoto(uri: Uri): Photo {
         val uid = auth.requireUid()
-        val prepared = Images.prepare(context, uri)
+        val image = FirestoreImages.prepare(context, uri)
         val id = UUID.randomUUID().toString()
-        val path = "users/$uid/photos/$id.jpg"
-        val ref = storage.reference.child(path)
-        ref.putBytes(prepared.bytes, StorageMetadata.Builder().setContentType("image/jpeg").build()).await()
-        return Photo(id = id, url = ref.downloadUrl.await().toString(), path = path, blurHash = prepared.blurHash)
+        val ref = db.collection("images").document(id)
+        FirestoreImages.write(ref, image, mapOf("owner" to uid))
+        return Photo(id = id, url = FirestoreImages.url(ref.path), path = ref.path, blurHash = image.blurHash)
     }
 
     override suspend fun deletePhoto(photo: Photo) {
-        if (photo.path.isBlank()) return
-        try {
-            storage.reference.child(photo.path).delete().await()
-        } catch (e: StorageException) {
-            if (e.errorCode != StorageException.ERROR_OBJECT_NOT_FOUND) throw e
-        }
+        val path = FirestoreImages.pathOf(photo.url) ?: return
+        runCatching { db.document(path).delete().await() }
     }
 
     override suspend fun getProfile(uid: String): Profile? {
         val profile = users.document(uid).get().await().data?.toProfile(uid) ?: return null
         val here = myLocation
-        return if (profile.distanceKm == null && here != null && profile.lat != null && profile.lng != null) {
+        return if (here != null && profile.lat != null && profile.lng != null) {
             val km = Geo.distanceKm(here.first, here.second, profile.lat, profile.lng)
             profile.copy(distanceKm = kotlin.math.ceil(km).toInt().coerceAtLeast(1))
         } else {
@@ -136,16 +145,12 @@ class FirebaseProfileRepository @Inject constructor(
     override suspend fun getMatchOnly(uid: String): MatchOnlyDetails? =
         runCatching { matchOnlyRef(uid).get().await().data?.toMatchOnly() }.getOrNull()
 
-    override suspend fun registerPushToken(token: String) {
-        val uid = auth.currentUser?.uid ?: return
-        users.document(uid).collection("tokens").document(token)
-            .set(mapOf("token" to token, "platform" to "android", "updatedAt" to FieldValue.serverTimestamp()))
-            .await()
-    }
-
+    /** Marks the user active and keeps their shown age current (it is checked by the rules). */
     override suspend fun touchLastActive() {
         val uid = auth.currentUser?.uid ?: return
-        runCatching { users.document(uid).update("lastActiveAt", FieldValue.serverTimestamp()).await() }
+        runCatching {
+            users.document(uid).update(account.profileFields(mapOf("lastActiveAt" to FieldValue.serverTimestamp()))).await()
+        }
     }
 
     private fun matchOnlyRef(uid: String) = users.document(uid).collection("matchOnly").document("details")

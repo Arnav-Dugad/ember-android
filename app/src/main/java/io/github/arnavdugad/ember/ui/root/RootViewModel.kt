@@ -2,7 +2,6 @@ package io.github.arnavdugad.ember.ui.root
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.messaging.FirebaseMessaging
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.model.Profile
@@ -23,7 +22,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 
 /** Where the user is in the journey; decides which top-level screen shows. */
@@ -53,15 +51,9 @@ class RootViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, RootState(mode = mode))
 
     init {
-        // Once fully signed in: register for pushes and mark the user active.
+        // Once fully signed in: mark the user active (which also keeps their shown age current).
         state.map { it.session }.distinctUntilChanged().filter { it == Session.Ready }.onEach {
-            if (mode == BackendMode.Firebase) {
-                viewModelScope.launch {
-                    // The token is delivered to EmberMessagingService.onRegistered, which saves it.
-                    runCatching { FirebaseMessaging.getInstance().register().await() }
-                    profiles.touchLastActive()
-                }
-            }
+            if (mode == BackendMode.Firebase) viewModelScope.launch { profiles.touchLastActive() }
         }.launchIn(viewModelScope)
     }
 

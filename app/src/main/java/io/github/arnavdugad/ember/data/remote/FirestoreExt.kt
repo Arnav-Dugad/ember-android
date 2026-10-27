@@ -6,11 +6,9 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.tasks.await
 import java.time.Instant
 
 /**
@@ -42,9 +40,6 @@ internal fun Query.snapshots(): Flow<QuerySnapshot?> = callbackFlow {
     }
     awaitClose { registration.remove() }
 }
-
-internal suspend fun FirebaseFunctions.call(name: String, data: Map<String, Any?> = emptyMap()): Map<*, *>? =
-    getHttpsCallable(name).call(data).await().getData() as? Map<*, *>
 
 // --- Loose readers. Firestore and callable results give numbers as Long, Integer or Double. ---
 

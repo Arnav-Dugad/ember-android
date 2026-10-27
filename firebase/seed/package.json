@@ -2,14 +2,12 @@
   "name": "ember-seed",
   "private": true,
   "type": "module",
-  "description": "Seeds Ember with illustrated demo profiles (isDemo: true).",
+  "description": "Seeds Ember with demo profiles (isDemo: true): AI portraits of people who don't exist plus DiceBear illustrations.",
   "scripts": {
     "seed": "node seed.mjs",
     "dry-run": "node seed.mjs --dry-run --count 6"
   },
   "dependencies": {
-    "@dicebear/collection": "^9.4.2",
-    "@dicebear/core": "^9.4.3",
     "blurhash": "^2.0.5",
     "firebase-admin": "^14.5.0",
     "geofire-common": "^6.0.0",

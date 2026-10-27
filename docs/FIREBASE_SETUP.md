@@ -1,177 +1,105 @@
-# Firebase setup
+# Firebase setup (free Spark plan)
 
-Ember builds and runs without Firebase. With no `app/google-services.json` it starts in offline
-**Preview mode** with local demo profiles. To run the real backend, follow these steps once.
-Allow about 30 minutes.
+Ember runs entirely on Firebase's free **Spark** plan. It uses Authentication, Cloud Firestore
+and Remote Config. There are **no Cloud Functions and no Cloud Storage** (both need the paid
+Blaze plan):
 
-Everything server side lives in [`firebase/`](../firebase). The contract between the app and the
-backend is [`docs/DATA_MODEL.md`](DATA_MODEL.md).
+- the Firestore security rules do the server's job;
+- photos are stored as compressed JPEG bytes inside Firestore documents.
+
+The contract is [DATA_MODEL.md](DATA_MODEL.md).
+
+Without any of this the app still builds and runs in offline **Preview mode**.
 
 ## 1. Create the project
 
-1. Open the [Firebase console](https://console.firebase.google.com/) and click **Add project**.
-   Enable Google Analytics when asked; Ember logs screen views and key events.
-2. Upgrade to the **Blaze (pay as you go)** plan under *Usage and billing*. Cloud Functions,
-   scheduled functions and cross-service Storage rules require it. At hobby scale the cost is
-   usually zero; set a budget alert anyway.
+1. Create a project in the [Firebase console](https://console.firebase.google.com) (or with
+   `firebase projects:create`). Stay on the Spark plan.
+2. Add two Android apps, `io.github.arnavdugad.ember` (release) and
+   `io.github.arnavdugad.ember.debug` (debug builds). Register both SHA-1 and SHA-256 fingerprints
+   for each. Google sign-in needs them.
+   ```bash
+   # debug key
+   keytool -list -v -keystore ~/.android/debug.keystore -storepass android
+   # release key (the one in the KEYSTORE_BASE64 secret)
+   keytool -list -v -keystore ember-release.jks
+   ```
+   With the CLI: `firebase apps:create ANDROID ...` then `firebase apps:android:sha:create <appId> <sha>`.
+3. Download `google-services.json` (it contains both apps), for example with
+   `firebase apps:sdkconfig ANDROID <appId> -o app/google-services.json`.
+   - Put it at `app/google-services.json`. It is git-ignored; `app/google-services.json.sample`
+     shows the expected shape.
+   - Download it again after enabling Google sign-in: that adds the OAuth clients.
 
-## 2. Register the Android app (twice)
+## 2. Authentication
 
-Debug builds use the package `io.github.arnavdugad.ember.debug`, so they can sit next to a
-release install. Register both packages in the same project:
+Authentication → Get started, then enable:
 
-1. *Project settings > General > Your apps > Add app > Android*
-   - Package name: `io.github.arnavdugad.ember`
-2. Add a second Android app:
-   - Package name: `io.github.arnavdugad.ember.debug`
+- **Email/Password**
+- **Google** (pick a support email)
+- **Phone**. SMS sign-in **may not work on Spark** for newer projects. If it fails, email and
+  Google still work.
 
-### Signing certificate fingerprints
-
-Google sign-in and Play Integrity need the SHA-1 and SHA-256 of every key that signs the app.
-Add the **release** key's fingerprints to the release app, and the **debug** key's to the
-`.debug` app.
-
-```bash
-# Debug key (created by Android Studio; the password is "android")
-keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android
-
-# Release key (see docs/RELEASING.md for creating it)
-keytool -list -v -keystore /path/to/ember-release.jks -alias ember
-```
-
-Copy the `SHA1:` and `SHA256:` lines into *Project settings > Your apps > (app) > Add
-fingerprint*.
-
-### google-services.json
-
-Download `google-services.json` after adding the fingerprints. One file contains both apps.
-Save it as **`app/google-services.json`**. It is git-ignored; never commit it.
-[`app/google-services.json.sample`](../app/google-services.json.sample) shows the expected
-shape.
-
-When the file is present, Gradle applies the Google Services and Crashlytics plugins
-automatically, and the app leaves Preview mode.
-
-## 3. Turn on the products
-
-| Product | Where | Settings |
-|---|---|---|
-| **Authentication** | Build > Authentication > Sign-in method | Enable **Email/Password**, **Google** (pick a support email) and **Phone**. For Phone, add test numbers under *Phone numbers for testing* while developing. |
-| **Firestore** | Build > Firestore Database | Create in **production mode**; pick a region close to your users. The rules are deployed in step 5. |
-| **Storage** | Build > Storage | Get started in **production mode**, same region. If your bucket is `<project>.appspot.com` (older projects), pass `--bucket` to the seed script. |
-| **Cloud Messaging** | Run > Messaging | Nothing to configure for Android; FCM is enabled with the project. |
-| **Remote Config** | Run > Remote Config | Created on deploy from `firebase/remoteconfig.template.json`. |
-| **Crashlytics** | Run > Crashlytics | Click *Enable*. The first crash report arrives after a release build has run once. |
-| **Analytics** | Enabled with the project | Nothing else to do. |
-
-## 4. App Check
-
-App Check makes sure requests come from your genuine app.
-
-1. *Build > App Check > Apps*: register **both** Android apps with **Play Integrity**. Play
-   Integrity uses the SHA-256 fingerprints from step 2. In Google Play Console, link the Cloud
-   project under *Release > App integrity* if prompted.
-2. Debug builds use the **debug provider**. On the first launch of a debug build, logcat prints:
-   `Enter this debug secret into the allow list in the Firebase Console for your project: <token>`.
-   Add that token under *App Check > Apps > (.debug app) > Manage debug tokens*.
-3. Once requests show as verified in the App Check metrics, click **Enforce** for Firestore and
-   Storage.
-
-### The sideloading caveat
-
-Ember is distributed as an APK on GitHub Releases, not through Google Play. Play Integrity's
-app-recognition verdict can fail for apps that Play did not install, so App Check may reject
-genuine sideloaded installs.
-
-- Callable Cloud Functions read the `ENFORCE_APP_CHECK` parameter (default `true`). To accept
-  calls without a valid token while distributing by APK, create `firebase/functions/.env` with
-  `ENFORCE_APP_CHECK=false` before deploying (the Firebase CLI also asks for the value on the
-  first deploy).
-- Only turn on Firestore and Storage enforcement in the console once your metrics show
-  sideloaded installs verifying. Security rules still protect every document either way; App
-  Check is an extra layer against scripted abuse, not a substitute for the rules.
-
-## 5. Deploy the backend
+## 3. Firestore, rules, indexes and Remote Config
 
 ```bash
 npm install -g firebase-tools
 firebase login
-
 cd firebase
-cp .firebaserc.example .firebaserc      # then put your project id in it
-# or: firebase use --add
-
-npm --prefix functions install
-firebase deploy --only firestore,storage,functions,remoteconfig
+cp .firebaserc.example .firebaserc        # then put your project id in it
+firebase deploy --only firestore,remoteconfig
 ```
 
-This deploys:
-- `firestore.rules` and `firestore.indexes.json`. Indexes can take a few minutes to build;
-  discovery returns errors until they finish.
-- `storage.rules`
-- Twelve Cloud Functions (Node 22, `us-central1`): `completeAgeGate`, `getDiscoveryDeck`,
-  `onSwipeCreated`, `rewindSwipe`, `onMessageCreated`, `onAlbumAccessWritten`, `unmatch`,
-  `blockUser`, `reportUser`, `deleteAccount`, `refreshAges`, `updateDemoVisibility`
-- The Remote Config template (`hide_demo_profiles`, `demo_hide_threshold`)
+The first deploy creates the Firestore database if it doesn't exist yet. It deploys:
 
-The first Functions deploy can ask you to enable several Google Cloud APIs (Cloud Build,
-Artifact Registry, Eventarc, Cloud Scheduler). Answer yes.
+- `firestore.rules`: age checks, mutual-like matching, blocks, private album access, image size limits;
+- `firestore.indexes.json`: the discovery index `users(onboarded, lastActiveAt desc)`;
+- `remoteconfig.template.json`: `hide_demo_profiles`, which you flip by hand once enough real people have joined.
 
-`updateDemoVisibility` publishes Remote Config through the Admin SDK. Its runtime service
-account needs the **Firebase Remote Config Admin** role (*Google Cloud console > IAM*; the
-default compute service account usually has Editor, which is enough).
-
-### Test the rules locally (optional)
+The rules are covered by tests that run on the Firestore emulator. These need Java 21+, for
+example Android Studio's bundled JBR:
 
 ```bash
-cd firebase/rules-tests
-npm install
-npm test      # starts the Firestore and Storage emulators and runs the rules tests
+cd firebase/rules-tests && npm install && npm test
 ```
 
-The emulators need Java 11 or newer on your PATH.
-
-## 6. Seed the demo profiles
+## 4. Seed demo profiles
 
 ```bash
 cd firebase/seed
 npm install
-# Project settings > Service accounts > Generate new private key -> save as serviceAccount.json
-node seed.mjs --project your-project-id
+node seed.mjs --dry-run --count 6                          # local preview, touches nothing
+node seed.mjs --cli-auth --project <your-project-id>       # 150 demo profiles, using your `firebase login`
+node seed.mjs --wipe --cli-auth --project <your-project-id>
 ```
 
-This creates 150 illustrated, clearly labelled demo profiles. See
-[`firebase/seed/README.md`](../firebase/seed/README.md). Remove them later with `--wipe`. They
-are hidden automatically once real users pass `demo_hide_threshold`.
+Instead of `--cli-auth` you can save a service-account key as `firebase/seed/serviceAccount.json`
+(git-ignored; Project settings → Service accounts → Generate new private key), or point
+`GOOGLE_APPLICATION_CREDENTIALS` at one.
 
-Delete `serviceAccount.json` when you are done. It grants full admin access to the project.
-
-## 7. Let CI include Firebase in release builds
-
-The release workflow writes `app/google-services.json` from a repository secret, so APKs
-published on GitHub talk to your project:
+## 5. Release builds with Firebase
 
 ```bash
-# macOS / Linux
-base64 -w0 app/google-services.json    # macOS: base64 -i app/google-services.json
-# Windows PowerShell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("app\google-services.json"))
+base64 -w0 app/google-services.json | gh secret set GOOGLE_SERVICES_JSON
 ```
 
-Add the output as the secret **`GOOGLE_SERVICES_JSON`** under *GitHub > Settings > Secrets and
-variables > Actions*. Without it, CI still builds a working APK, but in Preview mode.
+Without this secret, release APKs run in Preview mode.
 
-`google-services.json` contains identifiers, not secrets: the API key is restricted by package
-name and signing certificate, and access is governed by security rules and App Check. It is
-kept out of the repository so forks configure their own project.
+## 6. App Check (optional)
 
-## Checklist
+The app installs App Check (Play Integrity in release builds, the debug provider in debug
+builds). Leave Firestore enforcement **off**: copies installed from GitHub instead of the Play
+Store usually fail Play Integrity, so enforcing it would lock those users out.
 
-- [ ] Project on the Blaze plan
-- [ ] Both Android apps registered, SHA-1 and SHA-256 for debug and release keys added
-- [ ] `app/google-services.json` in place (and `GOOGLE_SERVICES_JSON` secret for CI)
-- [ ] Email/Password, Google and Phone sign-in enabled
-- [ ] Firestore and Storage created in production mode
-- [ ] App Check registered (Play Integrity + debug token); `ENFORCE_APP_CHECK` decided
-- [ ] `firebase deploy --only firestore,storage,functions,remoteconfig` succeeded
-- [ ] Demo profiles seeded
+## Limits of the free setup
+
+- **No push notifications.** Sending FCM messages needs a server. Matches and messages update in
+  real time while the app is open.
+- **Discovery reads at most 300 profiles per refresh** (the most recently active) and filters
+  them on the device.
+- **Blocking** removes the match and stops messages and new matches both ways. It can't hide
+  your profile from the other person's discovery query (rules can't filter list results per
+  document); the app drops blocked people from the deck.
+- **Spark quotas:** 50,000 document reads, 20,000 writes and 20,000 deletes per day, and 1 GiB
+  stored. Plenty for a personal app; each deck refresh costs about 300 reads.
+- **Images:** at most 900 KB each (the app re-encodes photos to about 150 to 300 KB JPEG).

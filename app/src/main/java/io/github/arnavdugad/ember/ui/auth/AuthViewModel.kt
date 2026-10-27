@@ -107,6 +107,11 @@ class AuthViewModel @Inject constructor(
         is FirebaseAuthInvalidUserException -> "We couldn't find that account."
         is FirebaseAuthInvalidCredentialsException -> "That didn't match. Check and try again."
         is FirebaseNetworkException -> "You're offline. Check your connection."
-        else -> e.message ?: "Something went wrong. Please try again."
+        // Newer Firebase projects only send SMS codes on the paid Blaze plan.
+        else -> if (e.message.orEmpty().contains("BILLING_NOT_ENABLED")) {
+            "Phone sign-in isn't available on this server's free plan. Use Google or email instead."
+        } else {
+            e.message ?: "Something went wrong. Please try again."
+        }
     }
 }

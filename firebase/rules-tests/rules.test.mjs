@@ -1,26 +1,46 @@
-// Security rules tests for firestore.rules and storage.rules.
-// Run from this folder with `npm test`; it boots the emulators for a demo project.
+// Security rules tests for firestore.rules (Spark plan: the rules are the server).
+// Run from this folder with `npm test`; it boots the Firestore emulator for a demo project.
 import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc, collection, query, where, getDocs,
+  Bytes, collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc,
+  updateDoc, where, writeBatch,
 } from "firebase/firestore";
-import { getBytes, ref, uploadBytes } from "firebase/storage";
 
 const ALICE = "alice";
 const BOB = "bob";
 const EVE = "eve";
+const DEMO = "demo-001";
 const MATCH = "alice_bob";
 
 let env;
-const adult = (uid) => env.authenticatedContext(uid, { adult: true });
+
+// Today's UTC date, so birth dates can be built relative to the emulator's request.time.
+const now = new Date();
+const Y = now.getUTCFullYear();
+const M = now.getUTCMonth() + 1;
+const D = now.getUTCDate();
+
+function ageFor(y, m, d) {
+  return M < m || (M === m && D < d) ? Y - y - 1 : Y - y;
+}
+
+const adultBirth = { birthYear: Y - 27, birthMonth: 3, birthDay: 14 };
+const adultAge = ageFor(adultBirth.birthYear, adultBirth.birthMonth, adultBirth.birthDay);
+
+const db = (uid) => env.authenticatedContext(uid).firestore();
+const jpeg = (size) => Bytes.fromUint8Array(new Uint8Array(size).fill(7));
+
+async function seed(fn) {
+  await env.withSecurityRulesDisabled(async (ctx) => fn(ctx.firestore()));
+}
 
 before(async () => {
   env = await initializeTestEnvironment({
     projectId: "demo-ember",
-    firestore: { rules: readFileSync("../firestore.rules", "utf8"), host: "127.0.0.1", port: 8080 },
-    storage: { rules: readFileSync("../storage.rules", "utf8"), host: "127.0.0.1", port: 9199 },
+    // Host and port come from FIRESTORE_EMULATOR_HOST, which `firebase emulators:exec` sets.
+    firestore: { rules: readFileSync("../firestore.rules", "utf8") },
   });
 });
 
@@ -30,133 +50,345 @@ after(async () => {
 
 beforeEach(async () => {
   await env.clearFirestore();
-  await env.withSecurityRulesDisabled(async (ctx) => {
-    const db = ctx.firestore();
-    await setDoc(doc(db, "users/alice"), { uid: ALICE, name: "Alice", age: 27, onboarded: true });
-    await setDoc(doc(db, "users/bob"), { uid: BOB, name: "Bob", age: 29, onboarded: true });
-    await setDoc(doc(db, "users/eve"), { uid: EVE, name: "Eve", age: 31, onboarded: true });
-    await setDoc(doc(db, `matches/${MATCH}`), { users: [ALICE, BOB], lastRead: {}, profiles: {} });
-    await setDoc(doc(db, "users/bob/matchOnly/details"), { boundaries: ["slow"], turnOns: [] });
-    await setDoc(doc(db, "users/alice/private/account"), { birthDate: "1999-01-01" });
-    await setDoc(doc(db, "albums/bob/photos/p1"), { path: "private/bob/p1.jpg", createdAt: new Date() });
+  await seed(async (fs) => {
+    for (const uid of [ALICE, BOB, EVE]) {
+      await setDoc(doc(fs, `users/${uid}/private/account`), { ...adultBirth, termsVersion: "2026-10", termsAcceptedAt: new Date() });
+      await setDoc(doc(fs, `users/${uid}`), { uid, name: uid, age: adultAge, onboarded: true, lastActiveAt: new Date() });
+    }
+    await setDoc(doc(fs, `users/${DEMO}`), { uid: DEMO, name: "Demo", age: 30, onboarded: true, isDemo: true, lastActiveAt: new Date() });
+    await setDoc(doc(fs, `demoMeta/${DEMO}`), { likesBack: true });
+    await setDoc(doc(fs, `matches/${MATCH}`), { users: [ALICE, BOB], lastRead: {}, profiles: {}, lastMessage: null });
+    await setDoc(doc(fs, "users/bob/matchOnly/details"), { boundaries: ["slow_burn"], turnOns: [] });
+    await setDoc(doc(fs, "albums/bob/photos/p1"), { data: jpeg(10), createdAt: new Date() });
+  });
+});
+
+describe("age gate", () => {
+  const terms = () => ({ termsVersion: "2026-10", termsAcceptedAt: serverTimestamp() });
+
+  test("an adult's account and first profile doc are written in one batch", async () => {
+    const fs = db("newbie");
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/newbie/private/account"), { ...adultBirth, ...terms() });
+    batch.set(doc(fs, "users/newbie"), {
+      uid: "newbie", age: adultAge, onboarded: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  test("exactly 18 today passes; 18 tomorrow does not", async () => {
+    await assertSucceeds(setDoc(doc(db("a18"), "users/a18/private/account"), { birthYear: Y - 18, birthMonth: M, birthDay: D, ...terms() }));
+    const tomorrow = new Date(Date.UTC(Y - 18, M - 1, D + 1));
+    await assertFails(setDoc(doc(db("b17"), "users/b17/private/account"), {
+      birthYear: tomorrow.getUTCFullYear(), birthMonth: tomorrow.getUTCMonth() + 1, birthDay: tomorrow.getUTCDate(), ...terms(),
+    }));
+  });
+
+  test("under-18 and over-100 dates are rejected", async () => {
+    await assertFails(setDoc(doc(db("kid"), "users/kid/private/account"), { birthYear: Y - 15, birthMonth: 1, birthDay: 1, ...terms() }));
+    await assertFails(setDoc(doc(db("old"), "users/old/private/account"), { birthYear: Y - 102, birthMonth: 1, birthDay: 1, ...terms() }));
+  });
+
+  test("only real calendar dates", async () => {
+    await assertSucceeds(setDoc(doc(db("leap"), "users/leap/private/account"), { birthYear: 2000, birthMonth: 2, birthDay: 29, ...terms() }));
+    await assertFails(setDoc(doc(db("bad1"), "users/bad1/private/account"), { birthYear: 2001, birthMonth: 2, birthDay: 29, ...terms() }));
+    await assertFails(setDoc(doc(db("bad2"), "users/bad2/private/account"), { birthYear: 1990, birthMonth: 4, birthDay: 31, ...terms() }));
+    await assertFails(setDoc(doc(db("bad3"), "users/bad3/private/account"), { birthYear: 1990, birthMonth: 13, birthDay: 1, ...terms() }));
+  });
+
+  test("the account doc is create-once, owner-only", async () => {
+    await assertFails(updateDoc(doc(db(ALICE), "users/alice/private/account"), { birthYear: 1950 }));
+    await assertFails(setDoc(doc(db(EVE), "users/mallory/private/account"), { ...adultBirth, ...terms() }));
+    await assertFails(getDoc(doc(db(EVE), "users/alice/private/account")));
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/alice/private/account")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/private/account")));
+  });
+
+  test("no profile without an account doc", async () => {
+    await assertFails(setDoc(doc(db("ghost"), "users/ghost"), { uid: "ghost", age: 25 }));
   });
 });
 
 describe("profiles", () => {
-  test("adults can read profiles, non-adults cannot", async () => {
-    await assertSucceeds(getDoc(doc(adult(EVE).firestore(), "users/alice")));
-    await assertFails(getDoc(doc(env.authenticatedContext(EVE).firestore(), "users/alice")));
+  test("adults read profiles; people without an account doc cannot", async () => {
+    await assertSucceeds(getDoc(doc(db(EVE), "users/alice")));
+    await assertFails(getDoc(doc(db("stranger"), "users/alice")));
     await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "users/alice")));
   });
 
-  test("owners edit their profile but never age or isDemo", async () => {
-    const db = adult(ALICE).firestore();
-    await assertSucceeds(updateDoc(doc(db, "users/alice"), { bio: "hi", lat: 40.71, lng: -74.01, geohash: "dr5re" }));
-    await assertFails(updateDoc(doc(db, "users/alice"), { age: 40 }));
-    await assertFails(updateDoc(doc(db, "users/alice"), { isDemo: true }));
-    await assertFails(updateDoc(doc(db, "users/alice"), { lat: 40.712776 }));
-    await assertFails(updateDoc(doc(db, "users/alice"), { geohash: "dr5regw" }));
-    await assertFails(updateDoc(doc(db, "users/alice"), { password: "x" }));
-    await assertFails(updateDoc(doc(adult(EVE).firestore(), "users/alice"), { bio: "pwned" }));
+  test("discovery list is capped at 300", async () => {
+    const base = collection(db(EVE), "users");
+    await assertSucceeds(getDocs(query(base, where("onboarded", "==", true), orderBy("lastActiveAt", "desc"), limit(300))));
+    await assertFails(getDocs(query(base, where("onboarded", "==", true), limit(301))));
+    await assertFails(getDocs(query(base, where("onboarded", "==", true))));
   });
 
-  test("blocked users cannot read the blocker", async () => {
-    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "users/alice/blocks/eve"), { createdAt: new Date() }));
-    await assertFails(getDoc(doc(adult(EVE).firestore(), "users/alice")));
+  test("age must match the birth date (one year of slack)", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { age: adultAge, bio: "hi" }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { age: adultAge + 1 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { age: adultAge + 2 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { age: 18 }));
+  });
+
+  test("clients can't claim to be demo profiles or write junk", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { isDemo: false }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { isDemo: true }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { lat: 40.712776 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { geohash: "dr5regw" }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { password: "x" }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { bio: "pwned" }));
+  });
+
+  test("blocked users cannot get the blocker", async () => {
+    await seed((fs) => setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() }));
+    await assertFails(getDoc(doc(db(EVE), "users/alice")));
   });
 
   test("boundaries are visible to matches only", async () => {
-    await assertSucceeds(getDoc(doc(adult(ALICE).firestore(), "users/bob/matchOnly/details")));
-    await assertFails(getDoc(doc(adult(EVE).firestore(), "users/bob/matchOnly/details")));
+    await assertSucceeds(getDoc(doc(db(ALICE), "users/bob/matchOnly/details")));
+    await assertFails(getDoc(doc(db(EVE), "users/bob/matchOnly/details")));
   });
 
-  test("private account doc is owner-read, server-write", async () => {
-    await assertSucceeds(getDoc(doc(adult(ALICE).firestore(), "users/alice/private/account")));
-    await assertFails(setDoc(doc(adult(ALICE).firestore(), "users/alice/private/account"), { birthDate: "1990-01-01" }));
-  });
-});
-
-describe("swipes", () => {
-  test("create-only with server time", async () => {
-    const db = adult(ALICE).firestore();
-    await assertSucceeds(setDoc(doc(db, "users/alice/swipes/eve"), { direction: "like", createdAt: serverTimestamp() }));
-    await assertFails(setDoc(doc(db, "users/alice/swipes/bob"), { direction: "like", createdAt: new Date(0) }));
-    await assertFails(setDoc(doc(db, "users/alice/swipes/bob"), { direction: "love", createdAt: serverTimestamp() }));
-    await assertFails(deleteDoc(doc(db, "users/alice/swipes/eve")));
-    await assertFails(setDoc(doc(adult(EVE).firestore(), "users/alice/swipes/bob"), { direction: "like", createdAt: serverTimestamp() }));
+  test("owners can delete their own profile", async () => {
+    await assertFails(deleteDoc(doc(db(EVE), "users/alice")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice")));
   });
 });
 
-describe("matches and chat", () => {
-  test("only participants read the match", async () => {
-    await assertSucceeds(getDoc(doc(adult(ALICE).firestore(), `matches/${MATCH}`)));
-    await assertFails(getDoc(doc(adult(EVE).firestore(), `matches/${MATCH}`)));
-    await assertSucceeds(getDocs(query(collection(adult(ALICE).firestore(), "matches"), where("users", "array-contains", ALICE))));
+describe("images", () => {
+  test("adults upload their own JPEGs up to 900 KB", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(setDoc(doc(fs, "images/i1"), { owner: ALICE, data: jpeg(1024), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(fs, "images/i2"), { owner: ALICE, data: jpeg(901 * 1024), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(fs, "images/i3"), { owner: BOB, data: jpeg(10), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db("stranger"), "images/i4"), { owner: "stranger", data: jpeg(10), createdAt: serverTimestamp() }));
   });
 
-  test("participants move only their own read marker", async () => {
-    const db = adult(ALICE).firestore();
-    await assertSucceeds(updateDoc(doc(db, `matches/${MATCH}`), { "lastRead.alice": serverTimestamp() }));
-    await assertFails(updateDoc(doc(db, `matches/${MATCH}`), { "lastRead.bob": serverTimestamp() }));
-    await assertFails(updateDoc(doc(db, `matches/${MATCH}`), { lastMessage: { text: "fake" } }));
+  test("adults read, only the owner deletes", async () => {
+    await seed((fs) => setDoc(doc(fs, "images/i1"), { owner: ALICE, data: jpeg(10), createdAt: new Date() }));
+    await assertSucceeds(getDoc(doc(db(BOB), "images/i1")));
+    await assertFails(getDoc(doc(db("stranger"), "images/i1")));
+    await assertFails(deleteDoc(doc(db(BOB), "images/i1")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "images/i1")));
+  });
+});
+
+describe("swipes and likes", () => {
+  test("swipes are owner-only with server time", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(setDoc(doc(fs, "users/alice/swipes/eve"), { direction: "like", createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(fs, "users/alice/swipes/bob"), { direction: "like", createdAt: new Date(0) }));
+    await assertFails(setDoc(doc(fs, "users/alice/swipes/alice"), { direction: "like", createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(EVE), "users/alice/swipes/x"), { direction: "nope", createdAt: serverTimestamp() }));
   });
 
-  test("messages are validated and immutable", async () => {
-    const db = adult(ALICE).firestore();
-    const msg = doc(db, `matches/${MATCH}/messages/m1`);
-    await assertSucceeds(setDoc(msg, { senderId: ALICE, type: "text", text: "hey", createdAt: serverTimestamp() }));
-    await assertFails(updateDoc(msg, { text: "edited" }));
-    await assertFails(setDoc(doc(db, `matches/${MATCH}/messages/m2`), { senderId: BOB, type: "text", text: "spoof", createdAt: serverTimestamp() }));
-    await assertFails(setDoc(doc(adult(EVE).firestore(), `matches/${MATCH}/messages/m3`), { senderId: EVE, type: "text", text: "hi", createdAt: serverTimestamp() }));
-    await assertSucceeds(setDoc(doc(db, `matches/${MATCH}/messages/m4`), {
-      senderId: ALICE, type: "image", text: "", imagePath: `chats/${MATCH}/m4.jpg`, imageBlurhash: "LEHV6nWB2yk8", createdAt: serverTimestamp(),
+  test("rewind: recent swipes without a match only", async () => {
+    await seed(async (fs) => {
+      await setDoc(doc(fs, "users/alice/swipes/eve"), { direction: "like", createdAt: new Date() });
+      await setDoc(doc(fs, "users/alice/swipes/bob"), { direction: "like", createdAt: new Date() });
+      await setDoc(doc(fs, "users/alice/swipes/old"), { direction: "nope", createdAt: new Date(Date.now() - 3600_000) });
+    });
+    const fs = db(ALICE);
+    await assertSucceeds(deleteDoc(doc(fs, "users/alice/swipes/eve")));
+    await assertFails(deleteDoc(doc(fs, "users/alice/swipes/bob"))); // matched
+    await assertFails(deleteDoc(doc(fs, "users/alice/swipes/old"))); // too old
+    // During account deletion (account doc gone), old swipes can be cleared.
+    await seed((s) => deleteDoc(doc(s, "users/alice/private/account")));
+    await assertSucceeds(deleteDoc(doc(fs, "users/alice/swipes/old")));
+  });
+
+  test("likedBy is written by the liker and readable by nobody", async () => {
+    await assertSucceeds(setDoc(doc(db(EVE), "users/alice/likedBy/eve"), { createdAt: serverTimestamp(), super: false }));
+    await assertFails(setDoc(doc(db(EVE), "users/alice/likedBy/bob"), { createdAt: serverTimestamp(), super: false }));
+    await assertFails(getDoc(doc(db(ALICE), "users/alice/likedBy/eve")));
+    await assertFails(getDocs(collection(db(ALICE), "users/alice/likedBy")));
+    await assertSucceeds(deleteDoc(doc(db(EVE), "users/alice/likedBy/eve")));
+  });
+});
+
+describe("matching", () => {
+  const matchDoc = (users, extra = {}) => ({
+    users, profiles: {}, createdAt: serverTimestamp(), superLike: false, isDemo: false, lastMessage: null, lastRead: {}, ...extra,
+  });
+
+  test("a one-sided like cannot create a match", async () => {
+    const fs = db(ALICE);
+    await setDoc(doc(fs, "users/eve/likedBy/alice"), { createdAt: serverTimestamp(), super: false });
+    await assertFails(setDoc(doc(fs, "matches/alice_eve"), matchDoc([ALICE, EVE])));
+  });
+
+  test("mutual likes create the match, even in the same batch as the second like", async () => {
+    await seed((fs) => setDoc(doc(fs, "users/eve/likedBy/alice"), { createdAt: new Date(), super: false }));
+    // Eve liked Alice already (alice/likedBy/eve is missing): Eve's like of Alice is written now.
+    await seed((fs) => setDoc(doc(fs, "users/alice/likedBy/eve"), { createdAt: new Date(), super: false }));
+    await assertSucceeds(setDoc(doc(db(ALICE), "matches/alice_eve"), matchDoc([ALICE, EVE])));
+
+    await env.clearFirestore();
+    await seed(async (fs) => {
+      for (const uid of [ALICE, EVE]) await setDoc(doc(fs, `users/${uid}/private/account`), { ...adultBirth, termsVersion: "x", termsAcceptedAt: new Date() });
+      await setDoc(doc(fs, "users/eve/likedBy/alice"), { createdAt: new Date(), super: false }); // Alice liked Eve earlier
+    });
+    const fs = db(EVE);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/alice/likedBy/eve"), { createdAt: serverTimestamp(), super: true });
+    batch.set(doc(fs, "matches/alice_eve"), matchDoc([ALICE, EVE], { superLike: true }));
+    await assertSucceeds(batch.commit());
+  });
+
+  test("match ids and fields are strict", async () => {
+    await seed(async (fs) => {
+      await setDoc(doc(fs, "users/eve/likedBy/alice"), { createdAt: new Date(), super: false });
+      await setDoc(doc(fs, "users/alice/likedBy/eve"), { createdAt: new Date(), super: false });
+    });
+    const fs = db(ALICE);
+    await assertFails(setDoc(doc(fs, "matches/eve_alice"), matchDoc([EVE, ALICE])));
+    await assertFails(setDoc(doc(fs, "matches/alice_eve"), matchDoc([ALICE, EVE], { lastMessage: { text: "x" } })));
+    await assertFails(setDoc(doc(db(BOB), "matches/alice_eve"), matchDoc([ALICE, EVE])));
+  });
+
+  test("demo profiles that like back match on a single like", async () => {
+    const fs = db(ALICE);
+    await setDoc(doc(fs, `users/${DEMO}/likedBy/alice`), { createdAt: serverTimestamp(), super: false });
+    await assertSucceeds(setDoc(doc(fs, `matches/alice_${DEMO}`), matchDoc([ALICE, DEMO], { isDemo: true })));
+    await seed((s) => setDoc(doc(s, `demoMeta/${DEMO}`), { likesBack: false }));
+    await seed((s) => deleteDoc(doc(s, `matches/alice_${DEMO}`)));
+    await assertFails(setDoc(doc(fs, `matches/alice_${DEMO}`), matchDoc([ALICE, DEMO], { isDemo: true })));
+  });
+
+  test("blocks prevent matches", async () => {
+    await seed(async (fs) => {
+      await setDoc(doc(fs, "users/eve/likedBy/alice"), { createdAt: new Date(), super: false });
+      await setDoc(doc(fs, "users/alice/likedBy/eve"), { createdAt: new Date(), super: false });
+      await setDoc(doc(fs, "users/eve/blocks/alice"), { createdAt: new Date() });
+    });
+    await assertFails(setDoc(doc(db(ALICE), "matches/alice_eve"), matchDoc([ALICE, EVE])));
+  });
+
+  test("participants move only their own read marker and post the preview", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, `matches/${MATCH}`), { "lastRead.alice": serverTimestamp() }));
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}`), { "lastRead.bob": serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(fs, `matches/${MATCH}`), {
+      lastMessage: { text: "hey", senderId: ALICE, type: "text", sentAt: serverTimestamp() },
     }));
-    await assertFails(setDoc(doc(db, `matches/${MATCH}/messages/m5`), {
-      senderId: ALICE, type: "image", text: "", imagePath: "private/bob/p1.jpg", createdAt: serverTimestamp(),
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}`), {
+      lastMessage: { text: "hey", senderId: BOB, type: "text", sentAt: serverTimestamp() },
     }));
-    await assertSucceeds(setDoc(doc(db, `matches/${MATCH}/messages/m6`), {
-      senderId: ALICE, type: "game", text: "", game: { mode: "dare", prompt: "Send your best pickup line" }, createdAt: serverTimestamp(),
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}`), { users: [ALICE, EVE] }));
+    await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}`)));
+  });
+
+  test("either participant can unmatch", async () => {
+    await assertFails(deleteDoc(doc(db(EVE), `matches/${MATCH}`)));
+    await assertSucceeds(deleteDoc(doc(db(BOB), `matches/${MATCH}`)));
+  });
+});
+
+describe("chat", () => {
+  const text = (sender, t = "hi") => ({ senderId: sender, type: "text", text: t, imageId: null, imageBlurhash: null, game: null, createdAt: serverTimestamp() });
+
+  test("participants send messages with the last-message preview in one batch", async () => {
+    const fs = db(ALICE);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `matches/${MATCH}/messages/m1`), text(ALICE));
+    batch.update(doc(fs, `matches/${MATCH}`), { lastMessage: { text: "hi", senderId: ALICE, type: "text", sentAt: serverTimestamp() } });
+    await assertSucceeds(batch.commit());
+    await assertSucceeds(getDoc(doc(db(BOB), `matches/${MATCH}/messages/m1`)));
+    await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}/messages/m1`)));
+  });
+
+  test("no spoofing, no edits, no outsiders", async () => {
+    await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/messages/m2`), text(BOB)));
+    await assertFails(setDoc(doc(db(EVE), `matches/${MATCH}/messages/m3`), text(EVE)));
+    await seed((fs) => setDoc(doc(fs, `matches/${MATCH}/messages/m4`), { senderId: ALICE, type: "text", text: "a", createdAt: new Date() }));
+    await assertFails(updateDoc(doc(db(ALICE), `matches/${MATCH}/messages/m4`), { text: "edited" }));
+    await assertSucceeds(deleteDoc(doc(db(BOB), `matches/${MATCH}/messages/m4`)));
+  });
+
+  test("blocks stop messages", async () => {
+    await seed((fs) => setDoc(doc(fs, "users/bob/blocks/alice"), { createdAt: new Date() }));
+    await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/messages/m5`), text(ALICE)));
+  });
+
+  test("image messages need the image doc", async () => {
+    const fs = db(ALICE);
+    const image = { senderId: ALICE, type: "image", text: "", imageId: "img1", imageBlurhash: "LEHV6nWB2yk8", game: null, createdAt: serverTimestamp() };
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/m6`), image));
+    await assertSucceeds(setDoc(doc(fs, `matches/${MATCH}/images/img1`), { owner: ALICE, data: jpeg(2048), createdAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(doc(fs, `matches/${MATCH}/messages/m6`), image));
+    await assertSucceeds(getDoc(doc(db(BOB), `matches/${MATCH}/images/img1`)));
+    await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}/images/img1`)));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/images/img2`), { owner: ALICE, data: jpeg(901 * 1024), createdAt: serverTimestamp() }));
+  });
+
+  test("game cards", async () => {
+    await assertSucceeds(setDoc(doc(db(ALICE), `matches/${MATCH}/messages/g1`), {
+      senderId: ALICE, type: "game", text: "Dare", imageId: null, imageBlurhash: null,
+      game: { mode: "dare", prompt: "Send your best pickup line." }, createdAt: serverTimestamp(),
     }));
+    await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/messages/g2`), {
+      senderId: ALICE, type: "game", text: "x", game: { mode: "kiss", prompt: "x" }, createdAt: serverTimestamp(),
+    }));
+  });
+
+  test("typing indicators are per user", async () => {
+    await assertSucceeds(setDoc(doc(db(ALICE), `matches/${MATCH}/typing/alice`), { typing: true, updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/typing/bob`), { typing: true, updatedAt: serverTimestamp() }));
+    await assertSucceeds(getDoc(doc(db(BOB), `matches/${MATCH}/typing/alice`)));
+    await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}/typing/alice`)));
   });
 });
 
 describe("private albums", () => {
-  test("request, approve, view, revoke", async () => {
-    const alice = adult(ALICE).firestore();
-    const bob = adult(BOB).firestore();
-    const access = doc(alice, "albums/bob/access/alice");
-    const req = { ownerId: BOB, viewerId: ALICE, status: "pending", requestedAt: serverTimestamp(), updatedAt: serverTimestamp() };
+  const request = { ownerId: BOB, viewerId: ALICE, status: "pending", requestedAt: serverTimestamp(), updatedAt: serverTimestamp() };
 
-    await assertFails(getDoc(doc(alice, "albums/bob/photos/p1")));
-    await assertFails(setDoc(doc(adult(EVE).firestore(), "albums/bob/access/eve"), { ...req, viewerId: EVE }));
-    await assertFails(setDoc(access, { ...req, status: "approved" }));
-    await assertSucceeds(setDoc(access, req));
-    await assertFails(updateDoc(access, { status: "approved", updatedAt: serverTimestamp() }));
-    await assertSucceeds(updateDoc(doc(bob, "albums/bob/access/alice"), { status: "approved", updatedAt: serverTimestamp() }));
-    await assertSucceeds(getDoc(doc(alice, "albums/bob/photos/p1")));
-    await assertSucceeds(deleteDoc(doc(bob, "albums/bob/access/alice")));
-    await assertFails(getDoc(doc(alice, "albums/bob/photos/p1")));
+  test("request, approve, view bytes, revoke", async () => {
+    await assertFails(getDoc(doc(db(ALICE), "albums/bob/photos/p1")));
+    await assertSucceeds(setDoc(doc(db(ALICE), "albums/bob/access/alice"), request));
+    await assertFails(getDoc(doc(db(ALICE), "albums/bob/photos/p1")));
+    await assertFails(updateDoc(doc(db(ALICE), "albums/bob/access/alice"), { status: "approved", updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(db(BOB), "albums/bob/access/alice"), { status: "approved", updatedAt: serverTimestamp() }));
+    const snap = await assertSucceeds(getDoc(doc(db(ALICE), "albums/bob/photos/p1")));
+    if (!(snap.data().data instanceof Bytes)) throw new Error("photo bytes missing");
+    await assertSucceeds(deleteDoc(doc(db(BOB), "albums/bob/access/alice")));
+    await assertFails(getDoc(doc(db(ALICE), "albums/bob/photos/p1")));
   });
 
-  test("storage: private photos follow the access doc", async () => {
-    await env.withSecurityRulesDisabled(async (ctx) => {
-      await uploadBytes(ref(ctx.storage(), "private/bob/p1.jpg"), new Uint8Array([1, 2, 3]), { contentType: "image/jpeg" });
-    });
-    const file = ref(adult(ALICE).storage(), "private/bob/p1.jpg");
-    await assertFails(getBytes(file));
-    await env.withSecurityRulesDisabled((ctx) =>
-      setDoc(doc(ctx.firestore(), "albums/bob/access/alice"), { ownerId: BOB, viewerId: ALICE, status: "approved" }));
-    await assertSucceeds(getBytes(file));
-    await assertSucceeds(getBytes(ref(adult(BOB).storage(), "private/bob/p1.jpg")));
-    await assertFails(getBytes(ref(adult(EVE).storage(), "private/bob/p1.jpg")));
+  test("only matches can ask, and requests start pending", async () => {
+    await assertFails(setDoc(doc(db(EVE), "albums/bob/access/eve"), { ...request, viewerId: EVE }));
+    await assertFails(setDoc(doc(db(ALICE), "albums/bob/access/alice"), { ...request, status: "approved" }));
   });
 
-  test("storage: uploads must be your own images", async () => {
-    const img = new Uint8Array([1, 2, 3]);
-    await assertSucceeds(uploadBytes(ref(adult(ALICE).storage(), "users/alice/photos/a.jpg"), img, { contentType: "image/jpeg" }));
-    await assertFails(uploadBytes(ref(adult(ALICE).storage(), "users/bob/photos/a.jpg"), img, { contentType: "image/jpeg" }));
-    await assertFails(uploadBytes(ref(adult(ALICE).storage(), "users/alice/photos/a.txt"), img, { contentType: "text/plain" }));
-    await assertSucceeds(uploadBytes(ref(adult(ALICE).storage(), `chats/${MATCH}/m4.jpg`), img, { contentType: "image/jpeg" }));
-    await assertFails(uploadBytes(ref(adult(EVE).storage(), `chats/${MATCH}/x.jpg`), img, { contentType: "image/jpeg" }));
+  test("owners manage their own album", async () => {
+    await assertSucceeds(setDoc(doc(db(BOB), "albums/bob/photos/p2"), { data: jpeg(100), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(ALICE), "albums/bob/photos/p3"), { data: jpeg(100), createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(BOB), "albums/bob/photos/p4"), { data: jpeg(901 * 1024), createdAt: serverTimestamp() }));
+    await assertSucceeds(deleteDoc(doc(db(BOB), "albums/bob/photos/p1")));
+  });
+});
+
+describe("safety", () => {
+  test("blocks are owner-managed", async () => {
+    await assertSucceeds(setDoc(doc(db(ALICE), "users/alice/blocks/eve"), { createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(EVE), "users/alice/blocks/bob"), { createdAt: serverTimestamp() }));
+    await assertFails(getDoc(doc(db(EVE), "users/alice/blocks/eve")));
+    await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/blocks/eve")));
+  });
+
+  test("reports are create-only", async () => {
+    const report = {
+      reporterId: ALICE, targetId: EVE, reason: "harassment", details: "", matchId: null, createdAt: serverTimestamp(), status: "open",
+    };
+    await assertSucceeds(setDoc(doc(db(ALICE), "reports/r1"), report));
+    await assertFails(setDoc(doc(db(ALICE), "reports/r2"), { ...report, reporterId: BOB }));
+    await assertFails(setDoc(doc(db(ALICE), "reports/r3"), { ...report, reason: "bored" }));
+    await assertFails(getDoc(doc(db(ALICE), "reports/r1")));
+  });
+
+  test("demo metadata is invisible", async () => {
+    await assertFails(getDoc(doc(db(ALICE), `demoMeta/${DEMO}`)));
+    await assertFails(setDoc(doc(db(ALICE), "demoMeta/alice"), { likesBack: true }));
   });
 });

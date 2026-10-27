@@ -47,7 +47,7 @@ class EmberApp :
         FirebaseAppCheck.getInstance().installAppCheckProviderFactory(appCheckFactory())
         FirebaseRemoteConfig.getInstance().apply {
             setConfigSettingsAsync(FirebaseRemoteConfigSettings.Builder().setMinimumFetchIntervalInSeconds(3600).build())
-            setDefaultsAsync(mapOf("hide_demo_profiles" to false, "demo_hide_threshold" to 500L))
+            setDefaultsAsync(mapOf("hide_demo_profiles" to false))
             fetchAndActivate()
         }
     }
@@ -71,6 +71,7 @@ class EmberApp :
         .components {
             add(OkHttpNetworkFetcherFactory(callFactory = { okHttp }))
             add(SvgDecoder.Factory())
+            add(io.github.arnavdugad.ember.data.remote.FirestoreImageFetcher.Factory())
         }
         .crossfade(true)
         .build()

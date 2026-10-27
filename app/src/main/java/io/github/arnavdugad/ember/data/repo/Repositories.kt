@@ -64,7 +64,6 @@ interface ProfileRepository {
 
     /** Readable only when matched with [uid]; null otherwise. */
     suspend fun getMatchOnly(uid: String): MatchOnlyDetails?
-    suspend fun registerPushToken(token: String)
     suspend fun touchLastActive()
 }
 

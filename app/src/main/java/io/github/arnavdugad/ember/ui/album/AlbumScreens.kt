@@ -139,10 +139,6 @@ class AlbumViewerViewModel @AssistedInject constructor(
     val photos: StateFlow<List<AlbumPhoto>?> = albums.observeAlbum(ownerUid).catch { emit(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** Private photos are cached only while the album is open. */
-    override fun onCleared() {
-        File(context.cacheDir, "private_album").deleteRecursively()
-    }
 }
 
 @Composable

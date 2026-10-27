@@ -6,11 +6,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageMetadata
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.github.arnavdugad.ember.core.util.Images
 import io.github.arnavdugad.ember.data.model.AccessStatus
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
@@ -21,24 +17,19 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.tasks.await
-import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Private albums. Files live under `private/{owner}/` in Storage, whose rules read
- * `albums/{owner}/access/{viewer}` on every request, so approving or revoking takes effect
- * immediately.
- *
- * Download URLs are never used here: they carry their own token and bypass rules, so a revoked
- * viewer could keep one. Bytes are fetched through the authenticated SDK (`getBytes`), which the
- * rules check on every read.
+ * Private albums. Each photo is a document under `albums/{owner}/photos`, and the rules read
+ * `albums/{owner}/access/{viewer}` on every read, so approving or revoking takes effect at once
+ * and no shareable link ever exists.
  */
 @Singleton
 class FirebaseAlbumRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val db: FirebaseFirestore,
-    private val storage: FirebaseStorage,
+    private val account: Account,
     @ApplicationContext private val context: Context,
 ) : AlbumRepository {
     private fun albumOf(owner: String) = db.collection("albums").document(owner)
@@ -49,27 +40,20 @@ class FirebaseAlbumRepository @Inject constructor(
 
     override suspend fun addPhoto(uri: Uri) {
         val uid = auth.requireUid()
-        val prepared = Images.prepare(context, uri)
-        val id = UUID.randomUUID().toString()
-        val path = "private/$uid/$id.jpg"
-        storage.reference.child(path)
-            .putBytes(prepared.bytes, StorageMetadata.Builder().setContentType("image/jpeg").build())
-            .await()
-        albumOf(uid).collection("photos").document(id)
-            .set(mapOf("path" to path, "createdAt" to FieldValue.serverTimestamp()))
-            .await()
-        db.collection("users").document(uid).update("privateAlbumCount", FieldValue.increment(1)).await()
+        val image = FirestoreImages.prepare(context, uri)
+        FirestoreImages.write(albumOf(uid).collection("photos").document(), image)
+        updateCount(uid)
     }
 
     override suspend fun removePhoto(photo: AlbumPhoto) {
         val uid = auth.requireUid()
-        try {
-            storage.reference.child(photo.path).delete().await()
-        } catch (e: StorageException) {
-            if (e.errorCode != StorageException.ERROR_OBJECT_NOT_FOUND) throw e
-        }
         albumOf(uid).collection("photos").document(photo.id).delete().await()
-        db.collection("users").document(uid).update("privateAlbumCount", FieldValue.increment(-1)).await()
+        updateCount(uid)
+    }
+
+    private suspend fun updateCount(uid: String) {
+        val count = albumOf(uid).collection("photos").get().await().size()
+        db.collection("users").document(uid).update(account.profileFields(mapOf("privateAlbumCount" to count))).await()
     }
 
     override fun observeRequests(): Flow<List<AlbumAccessRequest>> = auth.uidFlow().flatMapLatest { uid ->
@@ -131,30 +115,12 @@ class FirebaseAlbumRepository @Inject constructor(
 
     override fun observeAlbum(ownerUid: String): Flow<List<AlbumPhoto>> = observePhotos(ownerUid)
 
-    /**
-     * Photo metadata, with the image bytes written to an app-private cache file. The cache is
-     * cleared whenever the album is closed (see AlbumViewerViewModel), and the URL handed to the
-     * UI is a local file, never a shareable link.
-     */
+    /** Photo ids only; the bytes load through the `ember-fs://` image fetcher, checked by rules. */
     private fun observePhotos(owner: String): Flow<List<AlbumPhoto>> =
-        albumOf(owner).collection("photos").orderBy("createdAt", Query.Direction.DESCENDING).snapshots().mapLatest { snap ->
-            snap?.documents.orEmpty().mapNotNull { doc ->
-                val path = doc.getString("path") ?: return@mapNotNull null
-                AlbumPhoto(id = doc.id, path = path, url = cacheLocally(path))
+        albumOf(owner).collection("photos").orderBy("createdAt", Query.Direction.DESCENDING).snapshots().map { snap ->
+            snap?.documents.orEmpty().map { doc ->
+                val path = doc.reference.path
+                AlbumPhoto(id = doc.id, path = path, url = FirestoreImages.url(path))
             }
         }
-
-    private suspend fun cacheLocally(path: String): String? = runCatching {
-        val dir = java.io.File(context.cacheDir, "private_album").apply { mkdirs() }
-        val file = java.io.File(dir, path.replace('/', '_'))
-        if (!file.exists()) {
-            val bytes = storage.reference.child(path).getBytes(MAX_BYTES).await()
-            file.writeBytes(bytes)
-        }
-        file.toURI().toString()
-    }.getOrNull()
-
-    private companion object {
-        const val MAX_BYTES = 12L * 1024 * 1024
-    }
 }

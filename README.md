@@ -36,7 +36,7 @@ Ember runs in two modes, picked automatically at startup:
 | When | the build has no `google-services.json` | `app/google-services.json` is present |
 | Accounts | one local demo user | Email, Google and phone sign-in |
 | People | 72 demo profiles: AI-generated portraits of people who don't exist, plus illustrations | real users, plus seeded demo profiles until real sign-ups pass a threshold |
-| Data | your profile is saved on the device; matches and chats reset when the app closes | Firestore, Storage, Cloud Functions |
+| Data | your profile is saved on the device; matches and chats reset when the app closes | Firestore (free Spark plan): data and photos |
 
 That lets anyone try the full UI from the release APK before you set up a Firebase project. Demo profiles always wear a **Demo** badge, can match with you for testing, and **never** send messages.
 
@@ -48,8 +48,8 @@ That lets anyone try the full UI from the release APK before you set up a Fireba
 - **Discovery:** physics swipe deck (rotation around the grab point, velocity flings, spring return, LIKE / NOPE / SUPER stamps, stacked cards), rewind, distance, age and intent filters, and server-side geohash queries.
 - **After Dark:** a darker palette that also limits discovery to people open to casual or adventurous connections.
 - **Matching:** created only by a Cloud Function when likes are mutual. The match screen has flying photos, an ember burst and a spring headline.
-- **Chat:** real-time messages, typing indicator, read receipts, tap-to-reveal image messages, Truth or Dare cards, and push notifications.
-- **Private album:** photos are invisible until the owner approves a match, and access can be revoked instantly. Storage rules check access on every read, screenshots are blocked, and viewers see a consent reminder first.
+- **Chat:** real-time messages, typing indicator, read receipts, tap-to-reveal image messages, and Truth or Dare cards. Updates arrive in real time while the app is open; the free plan has no server to send push notifications.
+- **Private album:** photos are invisible until the owner approves a match, and access can be revoked instantly. Security rules check access on every photo read, screenshots are blocked, and viewers see a consent reminder first.
 - **Safety:** block, unmatch, report (8 reasons), private lock-screen notifications, and full account deletion.
 - **Design:** Haze backdrop blur with a frosted fallback below Android 12, continuous-curvature corners, Manrope typography, an ambient glow tinted by the current photo (Palette API), and haptics on thresholds, matches and presses.
 - **Self-update:** an in-app updater backed by GitHub Releases. It checks the SHA-256 of each download, plus its package name and signing certificate, before installing. Add `[mandatory]` to the release notes to require an update.
@@ -58,7 +58,7 @@ That lets anyone try the full UI from the release APK before you set up a Fireba
 
 Kotlin, Jetpack Compose, Material 3 (heavily restyled), MVVM, Hilt, Coroutines and Flow, Navigation Compose with type-safe routes and shared elements, Coil 3 (with BlurHash placeholders), Haze 2, DataStore, WorkManager, OkHttp, and Baseline Profiles.
 
-Firebase: Auth, Firestore, Storage, Cloud Functions (TypeScript), Cloud Messaging, App Check (Play Integrity), Remote Config, Crashlytics and Analytics.
+Firebase, entirely on the free **Spark** plan: Auth, Firestore (which also stores photos as compressed blobs), Remote Config, App Check, Crashlytics and Analytics. There are no Cloud Functions or Cloud Storage: security rules do the server's job (age verification, mutual-like matching, private-album access).
 
 ```
 app/                 Android app (single module, package-by-feature)
@@ -67,7 +67,7 @@ app/                 Android app (single module, package-by-feature)
   ui/                auth, onboarding, discover, profile, matches, chat, album, safety, settings
   update/            GitHub Releases self-updater (WorkManager + install sheet)
 baselineprofile/     Baseline Profile generator (macrobenchmark)
-firebase/            rules, indexes, Cloud Functions, seed script, rules tests
+firebase/            security rules, indexes, rules tests, seed script and AI demo portraits
 docs/                data model, Firebase setup, releasing
 ```
 
@@ -87,11 +87,11 @@ Local signed builds: copy `keystore.properties.example` to `keystore.properties`
 
 Follow **[docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md)**. In short:
 
-1. Create a Firebase project on the Blaze plan, then add Android apps `io.github.arnavdugad.ember` and `io.github.arnavdugad.ember.debug`.
+1. Create a Firebase project (the free Spark plan is enough), then add Android apps `io.github.arnavdugad.ember` and `io.github.arnavdugad.ember.debug`.
 2. Download `google-services.json` to `app/` (git-ignored; see `app/google-services.json.sample` for its shape).
-3. Enable Auth providers, Firestore, Storage, App Check and Remote Config.
-4. Deploy rules and functions with `cd firebase && firebase deploy --only firestore,storage,functions,remoteconfig`.
-5. Seed 150 illustrated demo profiles: `cd firebase/seed && npm i && node seed.mjs --bucket <your-bucket>`.
+3. Enable the Auth providers (Email/Password, Google, and Phone, though phone SMS may need a paid plan) and Firestore.
+4. Deploy rules, indexes and Remote Config with `cd firebase && firebase deploy --only firestore,remoteconfig`.
+5. Seed 150 demo profiles: `cd firebase/seed && npm i && node seed.mjs --cli-auth --project <project-id>`, using your `firebase login` (or put a `serviceAccount.json` next to the script).
 
 The contract between the app and the backend is documented in [docs/DATA_MODEL.md](docs/DATA_MODEL.md).
 

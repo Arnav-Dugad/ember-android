@@ -19,9 +19,11 @@ import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.PhoneVerification
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
@@ -34,28 +36,27 @@ import kotlin.coroutines.resumeWithException
 @Singleton
 class FirebaseAuthRepository @Inject constructor(
     private val auth: FirebaseAuth,
+    private val account: Account,
     @ApplicationContext private val context: Context,
 ) : AuthRepository {
     override val mode = BackendMode.Firebase
 
-    /** Fires on sign-in, sign-out and every token refresh, so new custom claims flow through. */
-    override val user: Flow<AuthUser?> = callbackFlow {
-        val listener = FirebaseAuth.IdTokenListener { firebaseAuth ->
-            val current = firebaseAuth.currentUser
-            if (current == null) {
-                trySend(null)
-            } else {
-                current.getIdToken(false)
-                    .addOnSuccessListener { result ->
-                        trySend(AuthUser(current.uid, current.email, current.phoneNumber, isAdult = result.claims["adult"] == true))
-                    }
-                    .addOnFailureListener {
-                        trySend(AuthUser(current.uid, current.email, current.phoneNumber, isAdult = false))
-                    }
-            }
+    /**
+     * Signed-in user plus whether they passed the age gate, which on the Spark plan means
+     * "users/{uid}/private/account exists" (rules only let adults create it).
+     */
+    override val user: Flow<AuthUser?> = auth.uidFlow().flatMapLatest { uid ->
+        if (uid == null) {
+            flowOf(null)
+        } else {
+            account.accountRef(uid).snapshots()
+                // A cold cache says "missing" before the server answers; wait for the server.
+                .filter { snap -> snap == null || snap.exists() || !snap.metadata.isFromCache }
+                .map { snap ->
+                    val current = auth.currentUser
+                    AuthUser(uid, current?.email, current?.phoneNumber, isAdult = snap?.exists() == true)
+                }
         }
-        auth.addIdTokenListener(listener)
-        awaitClose { auth.removeIdTokenListener(listener) }
     }.distinctUntilChanged()
 
     override suspend fun signInWithEmail(email: String, password: String) {
@@ -121,11 +122,12 @@ class FirebaseAuthRepository @Inject constructor(
     override suspend fun enterPreview() = error("Preview mode is only available without a Firebase project.")
 
     override suspend fun refreshClaims(): Boolean {
-        val user = auth.currentUser ?: return false
-        return user.getIdToken(true).await().claims["adult"] == true
+        val uid = auth.currentUser?.uid ?: return false
+        return account.accountRef(uid).get(com.google.firebase.firestore.Source.SERVER).await().exists()
     }
 
     override suspend fun signOut() {
+        account.forget()
         auth.signOut()
         runCatching { CredentialManager.create(context).clearCredentialState(androidx.credentials.ClearCredentialStateRequest()) }
     }

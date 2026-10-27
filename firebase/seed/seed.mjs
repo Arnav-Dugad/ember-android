@@ -1,26 +1,25 @@
 #!/usr/bin/env node
-// Seeds Ember with illustrated demo profiles.
+// Seeds Ember with demo profiles (Firestore only: the free Spark plan has no Cloud Storage).
 //
-// Every profile is fictional: names are drawn from lists, and every "photo" is an illustrated
-// avatar generated locally by DiceBear (CC0 styles "lorelei" and "notionists") on an ember and
-// plum gradient. No real person's photo is used, nothing is scraped, nothing is explicit.
+// Every profile is fictional. Each one's main photo is an AI-generated portrait of a person who
+// does not exist (portraits/, served from this repo through jsDelivr); the others are DiceBear
+// illustrations (CC0). Nothing is scraped, nothing is explicit.
 //
 // Every profile carries `isDemo: true`. The app shows a "Demo" badge on them, and no code path
 // ever sends a message as a demo profile.
 //
-//   node seed.mjs --dry-run --count 6         render into .cache/, touch nothing remote
-//   node seed.mjs --project my-proj           seed 150 profiles (default)
-//   node seed.mjs --wipe --project my-proj    delete all demo profiles, their matches and files
+//   node seed.mjs --dry-run --count 6                    write .cache/profiles.json, touch nothing remote
+//   node seed.mjs --cli-auth --project my-proj           seed 150 profiles using your `firebase login`
+//   node seed.mjs --wipe --cli-auth --project my-proj    delete all demo profiles and their matches
 //
-// Credentials: serviceAccount.json next to this file (git-ignored), or
-// GOOGLE_APPLICATION_CREDENTIALS. Bucket: --bucket, else <project>.firebasestorage.app.
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+// Credentials, in order: serviceAccount.json next to this file (git-ignored),
+// GOOGLE_APPLICATION_CREDENTIALS, or --cli-auth (the Firebase CLI's own login).
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { createAvatar } from "@dicebear/core";
-import { lorelei, notionists } from "@dicebear/collection";
 import { encode as encodeBlurhash } from "blurhash";
 import { geohashForLocation } from "geofire-common";
 import sharp from "sharp";
@@ -33,22 +32,18 @@ const { values: args } = parseArgs({
     count: { type: "string", default: "150" },
     "dry-run": { type: "boolean", default: false },
     wipe: { type: "boolean", default: false },
+    "cli-auth": { type: "boolean", default: false },
     project: { type: "string" },
-    bucket: { type: "string" },
-    concurrency: { type: "string", default: "6" },
   },
 });
 
 const COUNT = Math.max(1, Math.min(1000, Number(args.count) || 150));
 const DRY_RUN = args["dry-run"];
-const WIDTH = 768;
-const HEIGHT = 960;
+const PORTRAIT_BASE = "https://cdn.jsdelivr.net/gh/Arnav-Dugad/ember-android@main/firebase/seed/portraits/";
 
 const PROMPTS = readJson("prompts.json");
 const ANSWERS = readJson("shared/answers.json");
 const BIOS = readJson("shared/bios.json");
-const BIO_OPENERS = BIOS.openers;
-const BIO_CLOSERS = BIOS.closers;
 const CATALOG = readJson("catalog.json");
 
 // ---------- deterministic randomness ----------
@@ -124,18 +119,14 @@ const CITIES = [
   { city: "Delhi", lat: 28.6139, lng: 77.209 },
 ];
 
-
-// Soft gradients in the Ember palette: plum and midnight into ember orange and rose.
-const PALETTES = [
-  ["#2a0f2e", "#ff6a3d", "#ffb38a"],
-  ["#3b0d3a", "#ff4f7b", "#ffc2a8"],
-  ["#1f1230", "#f7a072", "#ffd9b8"],
-  ["#4a1942", "#ff8a5c", "#ffe0c7"],
-  ["#2b1b3d", "#e85d75", "#ffb1a3"],
-  ["#1d0f24", "#c94b7c", "#f9a8c0"],
-  ["#331433", "#ff7f50", "#ffd1a1"],
-  ["#22102b", "#ff5e62", "#ff9966"],
+// DiceBear background gradients in the Ember palette (hex without #).
+const BACKGROUNDS = [
+  "ffb38a,ff7aa8", "ffd6a5,ff8fab", "c8b6ff,ffb3c6", "ff9e7a,ffcf99",
+  "a0c4ff,ffc6ff", "fbc4ab,f08080", "ffafcc,ffc8dd", "f9c6c9,c9a7eb",
 ];
+
+const dicebear = (seed) =>
+  `https://api.dicebear.com/9.x/notionists/svg?seed=${encodeURIComponent(seed)}&backgroundType=gradientLinear&backgroundColor=${pick(BACKGROUNDS)}`;
 
 // ---------- profile generation ----------
 
@@ -165,21 +156,17 @@ function heightFor(gender) {
   return int(155, 188);
 }
 
-const pad = (n) => String(n).padStart(2, "0");
-
-/** Same rule as the age gate: whole years, UTC, birthday not yet reached counts as younger. */
-function ageOn(birthDate, now) {
-  const [y, m, d] = birthDate.split("-").map(Number);
-  const ny = now.getUTCFullYear();
-  const nm = now.getUTCMonth() + 1;
-  const nd = now.getUTCDate();
-  return ny - y - (nm > m || (nm === m && nd >= d) ? 0 : 1);
+/** Same rule as firestore.rules ageOf() and the app's Ages.ageOn(): UTC, whole years. */
+function ageOn({ birthYear, birthMonth, birthDay }, now) {
+  const m = now.getUTCMonth() + 1;
+  const d = now.getUTCDate();
+  return now.getUTCFullYear() - birthYear - (m < birthMonth || (m === birthMonth && d < birthDay) ? 1 : 0);
 }
 
-function birthDateFor(age, now) {
+function birthFor(age, now) {
   const birth = new Date(Date.UTC(now.getUTCFullYear() - age, now.getUTCMonth(), now.getUTCDate()));
   birth.setUTCDate(birth.getUTCDate() - int(0, 360));
-  return `${birth.getUTCFullYear()}-${pad(birth.getUTCMonth() + 1)}-${pad(birth.getUTCDate())}`;
+  return { birthYear: birth.getUTCFullYear(), birthMonth: birth.getUTCMonth() + 1, birthDay: birth.getUTCDate() };
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -188,9 +175,7 @@ function buildProfile(index, now) {
   const gender = genderFor(index);
   const uid = `demo-${String(index + 1).padStart(3, "0")}`;
   const name = pick(NAMES[gender]);
-  const targetAge = int(21, 40);
-  const birthDate = birthDateFor(targetAge, now);
-  const age = ageOn(birthDate, now);
+  const birth = birthFor(int(21, 40), now);
   const place = pick(CITIES);
   const lat = round2(place.lat + (rand() - 0.5) * 0.1);
   const lng = round2(place.lng + (rand() - 0.5) * 0.1);
@@ -198,26 +183,24 @@ function buildProfile(index, now) {
   const lookingFor = afterDark
     ? weighted([["casual", 45], ["exploring", 40], ["dating", 15]])
     : weighted([["dating", 40], ["casual", 25], ["exploring", 20], ["friends", 15]]);
-
   const prompts = sample(PROMPTS, int(2, 3)).map((p) => ({
     id: p.id,
     question: p.question,
     answer: pick(ANSWERS[p.id] ?? ["Ask me in person."]),
   }));
-
-  const bio = `${pick(BIO_OPENERS)} ${pick(BIO_CLOSERS)}`;
+  const illustrations = Array.from({ length: int(1, 3) }, (_, n) => ({ id: `${uid}-${n + 1}`, url: dicebear(`${uid}-${n}`), blurhash: null }));
 
   return {
     uid,
     gender,
-    photoCount: int(2, 4),
+    illustrations,
     profile: {
       uid,
       name,
-      age,
+      age: ageOn(birth, now),
       gender,
       interestedIn: interestedInFor(gender),
-      bio,
+      bio: `${pick(BIOS.openers)} ${pick(BIOS.closers)}`,
       photos: [],
       prompts,
       interests: sample(CATALOG.interests, int(3, 6)),
@@ -233,12 +216,9 @@ function buildProfile(index, now) {
       isDemo: true,
       onboarded: true,
     },
-    lastActiveMinutesAgo: int(5, 3 * 24 * 60),
-    account: {
-      birthDate,
-      termsVersion: "demo",
-      demoLikesBack: chance(0.5),
-    },
+    lastActiveMinutesAgo: int(5, 4 * 24 * 60),
+    account: { ...birth, termsVersion: "demo" },
+    likesBack: chance(0.5),
     matchOnly: {
       boundaries: sample(CATALOG.boundaries, int(2, 3)),
       turnOns: sample(CATALOG.turnOns, int(2, 3)),
@@ -246,60 +226,9 @@ function buildProfile(index, now) {
   };
 }
 
-// ---------- illustration ----------
+// ---------- portraits ----------
 
-function avatarSvg(seed, gender, styleIndex) {
-  const style = styleIndex % 2 === 0 ? lorelei : notionists;
-  const beard = gender === "man" ? 45 : 0;
-  const options = {
-    seed,
-    backgroundColor: ["transparent"],
-    ...(style === lorelei ? { beardProbability: beard, frecklesProbability: 25 } : { beardProbability: beard }),
-  };
-  return createAvatar(style, options).toString();
-}
-
-/** A portrait card: gradient backdrop, soft glow, and the avatar framed in the lower two thirds. */
-function portraitSvg(seed, gender, styleIndex, palette, rng) {
-  const [deep, ember, glow] = palette;
-  const avatar = avatarSvg(seed, gender, styleIndex)
-    .replace(/<svg /, `<svg x="${(WIDTH - 700) / 2}" y="${HEIGHT - 700}" width="700" height="700" `);
-  const between = (min, max) => min + Math.floor(rng() * (max - min + 1));
-  const bokeh = Array.from({ length: 7 }, () => {
-    const r = between(30, 110);
-    return `<circle cx="${between(0, WIDTH)}" cy="${between(0, HEIGHT / 2)}" r="${r}" fill="${glow}" opacity="${(0.05 + rng() * 0.12).toFixed(2)}"/>`;
-  }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="${deep}"/>
-      <stop offset="0.75" stop-color="${ember}"/>
-      <stop offset="1" stop-color="${glow}"/>
-    </linearGradient>
-    <radialGradient id="halo" cx="0.5" cy="0.62" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
-  <rect width="${WIDTH}" height="${HEIGHT}" fill="url(#bg)"/>
-  ${bokeh}
-  <ellipse cx="${WIDTH / 2}" cy="${HEIGHT * 0.62}" rx="${WIDTH * 0.48}" ry="${HEIGHT * 0.4}" fill="url(#halo)"/>
-  ${avatar}
-</svg>`;
-}
-
-/** A stable 32-bit hash, so each photo gets its own RNG and renders identically every run. */
-function hash(text) {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
-  return h >>> 0;
-}
-
-/**
- * AI-generated portraits of people who don't exist (portraits/manifest.json). Each profile's
- * first photo is a portrait matching its gender, cycling so the set is spread evenly; the rest
- * stay illustrated.
- */
+/** Portraits grouped by gender, from portraits/manifest.json. */
 function loadPortraits() {
   const manifest = join(HERE, "portraits", "manifest.json");
   if (!existsSync(manifest)) return {};
@@ -308,23 +237,46 @@ function loadPortraits() {
   return byGender;
 }
 
-async function portraitPhoto(file) {
-  const jpg = readFileSync(join(HERE, "portraits", file));
-  const { data, info } = await sharp(jpg).resize(32, 40).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { bytes: jpg, blurhash: encodeBlurhash(new Uint8ClampedArray(data), info.width, info.height, 4, 5) };
-}
-
-async function renderPhoto(uid, gender, n) {
-  const rng = mulberry32(hash(`${uid}/${n}`));
-  const palette = PALETTES[Math.floor(rng() * PALETTES.length)];
-  const svg = portraitSvg(`${uid}-${n}`, gender, n + Number(uid.slice(-1)), palette, rng);
-  const png = await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toBuffer();
-  const { data, info } = await sharp(png).resize(32, 40).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const blurhash = encodeBlurhash(new Uint8ClampedArray(data), info.width, info.height, 4, 5);
-  return { png, blurhash };
+const blurhashes = new Map();
+async function portraitBlurhash(file) {
+  if (!blurhashes.has(file)) {
+    const { data, info } = await sharp(join(HERE, "portraits", file))
+      .resize(32, 40)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    blurhashes.set(file, encodeBlurhash(new Uint8ClampedArray(data), info.width, info.height, 4, 5));
+  }
+  return blurhashes.get(file);
 }
 
 // ---------- Firebase ----------
+
+/**
+ * --cli-auth: reuse the Firebase CLI's login. firebase-admin's Firestore client only accepts a
+ * service account or Application Default Credentials, so the CLI's refresh token is written to a
+ * private temp file in the "authorized_user" ADC format, used, and deleted on exit.
+ */
+function cliCredentialsFile(projectId) {
+  const store = join(homedir(), ".config", "configstore", "firebase-tools.json");
+  if (!existsSync(store)) throw new Error("No Firebase CLI login found. Run `firebase login` first.");
+  const refreshToken = JSON.parse(readFileSync(store, "utf8"))?.tokens?.refresh_token;
+  if (!refreshToken) throw new Error("The Firebase CLI login has no refresh token. Run `firebase login --reauth`.");
+  // The CLI's OAuth client (public, shipped inside firebase-tools).
+  const globalRoot = execSync("npm root -g", { encoding: "utf8" }).trim();
+  const api = JSON.parse(
+    execSync(`node -e "const a=require(process.argv[1]);console.log(JSON.stringify({id:a.clientId(),secret:a.clientSecret()}))" "${join(globalRoot, "firebase-tools", "lib", "api.js")}"`, { encoding: "utf8" }),
+  );
+  const file = join(tmpdir(), `ember-seed-adc-${process.pid}.json`);
+  writeFileSync(
+    file,
+    JSON.stringify({ type: "authorized_user", client_id: api.id, client_secret: api.secret, refresh_token: refreshToken, quota_project_id: projectId }),
+    { mode: 0o600 },
+  );
+  const cleanup = () => rmSync(file, { force: true });
+  process.on("exit", cleanup);
+  return file;
+}
 
 async function initFirebase() {
   const { initializeApp, cert, applicationDefault } = await import("firebase-admin/app");
@@ -336,58 +288,31 @@ async function initFirebase() {
     credential = cert(key);
     projectId ??= key.project_id;
   } else {
+    if (args["cli-auth"]) {
+      if (!projectId) throw new Error("--cli-auth needs --project <id>.");
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = cliCredentialsFile(projectId);
+    }
     credential = applicationDefault();
     projectId ??= process.env.GCLOUD_PROJECT ?? process.env.GOOGLE_CLOUD_PROJECT;
   }
   if (!projectId) throw new Error("Pass --project <id>, or put serviceAccount.json next to seed.mjs.");
-  const storageBucket = args.bucket ?? `${projectId}.firebasestorage.app`;
-  initializeApp({ credential, projectId, storageBucket });
-
+  initializeApp({ credential, projectId });
   const { getFirestore, FieldValue, Timestamp } = await import("firebase-admin/firestore");
-  const { getStorage } = await import("firebase-admin/storage");
-  return { db: getFirestore(), bucket: getStorage().bucket(), FieldValue, Timestamp, projectId, storageBucket };
+  return { db: getFirestore(), FieldValue, Timestamp, projectId };
 }
 
-async function uploadPhoto(bucket, path, png, contentType = "image/png") {
-  const token = randomUUID();
-  await bucket.file(path).save(png, {
-    resumable: false,
-    contentType,
-    metadata: {
-      cacheControl: "public, max-age=31536000",
-      metadata: { firebaseStorageDownloadTokens: token },
-    },
-  });
-  return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
-}
-
-async function wipe(fb) {
-  const { db, bucket } = fb;
+async function wipe({ db }) {
   const demoUsers = await db.collection("users").where("isDemo", "==", true).get();
   console.log(`Deleting ${demoUsers.size} demo profiles...`);
   for (const user of demoUsers.docs) {
     await db.recursiveDelete(user.ref);
     await db.recursiveDelete(db.collection("albums").doc(user.id));
+    await db.collection("demoMeta").doc(user.id).delete();
   }
   const demoMatches = await db.collection("matches").where("isDemo", "==", true).get();
   console.log(`Deleting ${demoMatches.size} matches with demo profiles...`);
-  for (const match of demoMatches.docs) {
-    await db.recursiveDelete(match.ref);
-    await bucket.deleteFiles({ prefix: `chats/${match.id}/`, force: true }).catch(() => {});
-  }
-  await bucket.deleteFiles({ prefix: "demo/", force: true }).catch(() => {});
+  for (const match of demoMatches.docs) await db.recursiveDelete(match.ref);
   console.log("Wipe complete.");
-}
-
-async function runPool(items, size, worker) {
-  let next = 0;
-  const runners = Array.from({ length: Math.min(size, items.length) }, async () => {
-    while (next < items.length) {
-      const i = next++;
-      await worker(items[i], i);
-    }
-  });
-  await Promise.all(runners);
 }
 
 // ---------- main ----------
@@ -395,50 +320,31 @@ async function runPool(items, size, worker) {
 async function main() {
   const now = new Date();
   const fb = DRY_RUN ? null : await initFirebase();
-
   if (args.wipe) {
     await wipe(fb);
     return;
   }
 
-  // Build every profile (and every photo's random choices) up front, in order, so the output is
-  // identical across runs regardless of upload timing.
+  // Build every profile up front, in order, so the output is identical across runs.
   const plans = Array.from({ length: COUNT }, (_, i) => buildProfile(i, now));
   const portraits = loadPortraits();
   const used = {};
-  const renders = [];
   for (const plan of plans) {
     const pool = portraits[plan.gender] ?? [];
+    const main = [];
     if (pool.length) {
       const i = (used[plan.gender] = (used[plan.gender] ?? -1) + 1);
-      plan.portrait = pool[i % pool.length];
+      const file = pool[i % pool.length];
+      main.push({ id: `${plan.uid}-0`, url: PORTRAIT_BASE + file, blurhash: await portraitBlurhash(file) });
     }
-    for (let n = 0; n < plan.photoCount; n++) renders.push({ plan, n });
+    plan.profile.photos = [...main, ...plan.illustrations];
   }
 
-  const cacheDir = join(HERE, ".cache");
-  if (DRY_RUN) mkdirSync(cacheDir, { recursive: true });
-  console.log(`${DRY_RUN ? "Rendering" : "Seeding"} ${COUNT} demo profiles (${renders.length} illustrations)...`);
-
-  await runPool(renders, Number(args.concurrency) || 6, async ({ plan, n }) => {
-    const usePortrait = n === 0 && plan.portrait;
-    const { bytes, blurhash } = usePortrait
-      ? await portraitPhoto(plan.portrait)
-      : await renderPhoto(plan.uid, plan.gender, n).then((r) => ({ bytes: r.png, blurhash: r.blurhash }));
-    const ext = usePortrait ? "jpg" : "png";
-    const path = `demo/${plan.uid}/${n}.${ext}`;
-    let url = `file://${join(cacheDir, `${plan.uid}-${n}.${ext}`).split(sep).join("/")}`;
-    if (DRY_RUN) {
-      writeFileSync(join(cacheDir, `${plan.uid}-${n}.${ext}`), bytes);
-    } else {
-      url = await uploadPhoto(fb.bucket, path, bytes, usePortrait ? "image/jpeg" : "image/png");
-    }
-    plan.profile.photos[n] = { id: `${plan.uid}-${n}`, url, path, blurhash };
-  });
-
   if (DRY_RUN) {
+    const cacheDir = join(HERE, ".cache");
+    mkdirSync(cacheDir, { recursive: true });
     writeFileSync(join(cacheDir, "profiles.json"), JSON.stringify(plans.map((p) => p.profile), null, 2));
-    console.log(`Dry run done. Inspect ${cacheDir}`);
+    console.log(`Dry run: ${COUNT} profiles written to ${join(cacheDir, "profiles.json")}`);
     return;
   }
 
@@ -454,15 +360,17 @@ async function main() {
     });
     writer.set(userRef.collection("private").doc("account"), {
       ...plan.account,
-      ageVerifiedAt: FieldValue.serverTimestamp(),
+      termsAcceptedAt: FieldValue.serverTimestamp(),
     });
     writer.set(userRef.collection("matchOnly").doc("details"), plan.matchOnly);
+    writer.set(db.collection("demoMeta").doc(plan.uid), { likesBack: plan.likesBack });
   }
   await writer.close();
-  console.log(`Seeded ${plans.length} demo profiles into ${fb.projectId} (bucket ${fb.storageBucket}).`);
+  const verified = await db.collection("users").where("isDemo", "==", true).count().get();
+  console.log(`Seeded ${plans.length} demo profiles into ${fb.projectId}; ${verified.data().count} demo profiles now in Firestore.`);
 }
 
-main().catch((error) => {
-  console.error(error);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
 });

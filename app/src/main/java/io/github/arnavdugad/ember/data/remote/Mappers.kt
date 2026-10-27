@@ -58,7 +58,7 @@ internal fun ProfileDraft.toFirestore(uid: String): Map<String, Any?> {
         "name" to name.trim(),
         "interestedIn" to interestedIn.map(Gender::key),
         "bio" to bio.trim(),
-        "photos" to photos.map { mapOf("id" to it.id, "url" to it.url, "path" to it.path, "blurhash" to it.blurHash) },
+        "photos" to photos.map { mapOf("id" to it.id, "url" to it.url, "blurhash" to it.blurHash) },
         "prompts" to prompts.map { mapOf("id" to it.id, "question" to it.question, "answer" to it.answer.trim()) },
         "interests" to interests,
         "vibes" to vibes,
