@@ -22,6 +22,31 @@ internal data class Portrait(val file: String, val gender: String)
 @Serializable
 internal data class Bios(val openers: List<String>, val closers: List<String>)
 
+@Serializable
+internal data class PersonPrompt(val id: String, val answer: String)
+
+/** One demo person, written to match their portrait (firebase/seed/shared/people.json). */
+@Serializable
+internal data class Person(
+    val file: String,
+    val name: String,
+    val gender: String,
+    val age: Int,
+    val city: String,
+    val lat: Double,
+    val lng: Double,
+    val interestedIn: List<String> = emptyList(),
+    val bio: String,
+    val prompts: List<PersonPrompt> = emptyList(),
+    val interests: List<String> = emptyList(),
+    val vibes: List<String> = emptyList(),
+    val lookingFor: String = "dating",
+    val heightCm: Int? = null,
+    val afterDark: Boolean = false,
+    val boundaries: List<String> = emptyList(),
+    val turnOns: List<String> = emptyList(),
+)
+
 /**
  * Copy shared with the Firebase seed script (firebase/seed/shared, packaged as assets), so
  * Preview profiles read exactly like seeded ones.
@@ -30,6 +55,7 @@ internal class DemoContent(
     val answers: Map<String, List<String>>,
     val bios: Bios,
     val portraits: List<Portrait>,
+    val people: List<Person>,
 ) {
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
@@ -43,7 +69,8 @@ internal class DemoContent(
             }.orEmpty()
             val bios = read("bios.json")?.let { json.decodeFromString<Bios>(it) } ?: Bios(listOf("Here for good chemistry."), listOf("Say hi."))
             val portraits = read("portraits.json")?.let { json.decodeFromString<List<Portrait>>(it) }.orEmpty()
-            return DemoContent(answers, bios, portraits)
+            val people = read("people.json")?.let { runCatching { json.decodeFromString<List<Person>>(it) }.getOrNull() }.orEmpty()
+            return DemoContent(answers, bios, portraits, people)
         }
     }
 }
@@ -81,7 +108,40 @@ internal object DemoData {
     fun avatarUrl(seed: String, background: String): String =
         "https://api.dicebear.com/9.x/notionists/svg?seed=$seed&backgroundType=gradientLinear&backgroundColor=$background"
 
-    fun generate(content: DemoContent, count: Int = 72): List<DemoPerson> {
+    fun generate(content: DemoContent, count: Int = 72): List<DemoPerson> =
+        if (content.people.isNotEmpty()) fromPeople(content.people) else generated(content, count)
+
+    /** The cast: each person written to match their own portrait. */
+    private fun fromPeople(people: List<Person>): List<DemoPerson> {
+        val random = Random(7)
+        return people.map { p ->
+            val uid = "demo-preview-${p.file.substringBefore('.')}"
+            val profile = Profile(
+                uid = uid,
+                name = p.name,
+                age = p.age,
+                gender = Gender.of(p.gender),
+                interestedIn = p.interestedIn.mapNotNull(Gender::of).toSet(),
+                bio = p.bio,
+                photos = listOf(Photo(id = "$uid-0", url = PORTRAIT_BASE + p.file)),
+                prompts = p.prompts.mapNotNull { pr -> Catalog.prompt(pr.id)?.let { ProfilePrompt(pr.id, it.question, pr.answer) } },
+                interests = p.interests,
+                vibes = p.vibes,
+                lookingFor = LookingFor.of(p.lookingFor),
+                heightCm = p.heightCm,
+                city = p.city,
+                afterDark = p.afterDark,
+                privateAlbumCount = if (random.nextInt(3) == 0) 2 + random.nextInt(5) else 0,
+                isDemo = true,
+                onboarded = true,
+                lat = p.lat,
+                lng = p.lng,
+            )
+            DemoPerson(profile, likesBack = random.nextInt(100) < 55, matchOnly = MatchOnlyDetails(p.boundaries, p.turnOns))
+        }
+    }
+
+    private fun generated(content: DemoContent, count: Int): List<DemoPerson> {
         val random = Random(42)
         val portraitsByGender = content.portraits.groupBy { it.gender }
         val nextPortrait = mutableMapOf<String, Int>()

@@ -192,6 +192,7 @@ fun MainScaffold(deepLinks: DeepLinks) {
                             onEdit = { nav.navigate(EditProfileRoute) },
                             onSettings = { nav.navigate(SettingsRoute) },
                             onAlbum = { nav.navigate(MyAlbumRoute) },
+                            onPreview = { uid -> nav.navigate(ProfileRoute(uid)) },
                         )
                     }
                     composable<ProfileRoute>(

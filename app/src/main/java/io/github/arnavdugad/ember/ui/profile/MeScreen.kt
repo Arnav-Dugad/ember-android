@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NightsStay
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -90,7 +91,7 @@ private fun Profile.completeness(): Float {
 }
 
 @Composable
-fun MeScreen(onEdit: () -> Unit, onSettings: () -> Unit, onAlbum: () -> Unit, viewModel: MeViewModel = hiltViewModel()) {
+fun MeScreen(onEdit: () -> Unit, onSettings: () -> Unit, onAlbum: () -> Unit, onPreview: (uid: String) -> Unit, viewModel: MeViewModel = hiltViewModel()) {
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val afterDark by viewModel.afterDark.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
@@ -133,6 +134,7 @@ fun MeScreen(onEdit: () -> Unit, onSettings: () -> Unit, onAlbum: () -> Unit, vi
                 }
             }
             MenuItem(Icons.Rounded.Edit, "Edit profile", "Photos, prompts, vibes and more", onEdit)
+            p?.let { MenuItem(Icons.Rounded.Visibility, "Preview my profile", "See exactly what others see", onClick = { onPreview(it.uid) }) }
             MenuItem(
                 Icons.Rounded.Lock,
                 "Private album",

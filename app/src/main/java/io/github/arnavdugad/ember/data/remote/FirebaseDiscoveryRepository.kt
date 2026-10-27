@@ -53,10 +53,8 @@ class FirebaseDiscoveryRepository @Inject constructor(
             .filter { me.interestedIn.isEmpty() || it.gender in me.interestedIn }
             .filter { it.interestedIn.isEmpty() || me.gender == null || me.gender in it.interestedIn }
             .map { it.withDistanceFrom(me) }
-            .filter { p -> p.distanceKm == null || filters.maxDistanceKm >= 160 || p.distanceKm <= filters.maxDistanceKm }
             .toList()
-            .shuffled(random)
-            .sortedBy { it.isDemo }
+            .nearFirst(filters.maxDistanceKm, random)
     }
 
     override suspend fun swipe(target: Profile, direction: SwipeDirection) {
@@ -127,4 +125,13 @@ class FirebaseDiscoveryRepository @Inject constructor(
     private companion object {
         const val MAX_CANDIDATES = 300L
     }
+}
+
+/**
+ * People within [maxKm] first (a stable shuffle, real people before demos), then everyone further
+ * away, nearest first. A small community never shows an empty deck just because nobody is close.
+ */
+internal fun List<Profile>.nearFirst(maxKm: Int, random: Random): List<Profile> {
+    val (near, far) = partition { p -> p.distanceKm == null || maxKm >= 160 || p.distanceKm <= maxKm }
+    return near.shuffled(random).sortedBy { it.isDemo } + far.sortedBy { it.distanceKm }
 }

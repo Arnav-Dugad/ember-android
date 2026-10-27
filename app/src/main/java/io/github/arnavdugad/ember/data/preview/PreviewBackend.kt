@@ -2,6 +2,8 @@ package io.github.arnavdugad.ember.data.preview
 
 import android.app.Activity
 import android.content.Context
+import io.github.arnavdugad.ember.core.util.Geo
+import io.github.arnavdugad.ember.data.remote.nearFirst
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.Uri
 import io.github.arnavdugad.ember.data.model.AccessStatus
@@ -26,7 +28,6 @@ import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
-import io.github.arnavdugad.ember.data.repo.PhoneVerification
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import io.github.arnavdugad.ember.data.repo.UnderageException
@@ -107,8 +108,6 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     override suspend fun signUpWithEmail(email: String, password: String) = unsupported()
     override suspend fun sendPasswordReset(email: String) = unsupported()
     override suspend fun signInWithGoogle(activity: Activity) = unsupported()
-    override suspend fun startPhoneVerification(activity: Activity, phoneNumber: String): PhoneVerification = unsupported()
-    override suspend fun confirmPhoneCode(verificationId: String, code: String) = unsupported()
 
     override suspend fun refreshClaims(): Boolean = authUser.value?.isAdult == true
 
@@ -186,12 +185,20 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
             .map { it.profile }
             .filter { it.uid !in swipes && it.uid !in blocked }
             .filter { it.age in filters.minAge..filters.maxAge }
-            .filter { (it.distanceKm ?: 0) <= filters.maxDistanceKm }
             .filter { filters.lookingFor.isEmpty() || it.lookingFor in filters.lookingFor }
             .filter { !afterDark || it.afterDark || it.lookingFor.isAdventurous }
             .filter { mine?.interestedIn.isNullOrEmpty() || it.gender in mine.interestedIn }
-            .take(30)
+            .map { p ->
+                val here = mine?.lat?.let { lat -> mine.lng?.let { lng -> lat to lng } }
+                if (here != null && p.lat != null && p.lng != null) {
+                    p.copy(distanceKm = kotlin.math.ceil(Geo.distanceKm(here.first, here.second, p.lat, p.lng)).toInt().coerceAtLeast(1))
+                } else {
+                    p
+                }
+            }
             .toList()
+            .nearFirst(filters.maxDistanceKm, kotlin.random.Random(swipes.size))
+            .take(40)
     }
 
     override suspend fun swipe(target: Profile, direction: SwipeDirection) {

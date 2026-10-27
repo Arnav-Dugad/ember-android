@@ -226,6 +226,50 @@ function buildProfile(index, now) {
   };
 }
 
+/**
+ * A profile written for one specific portrait (shared/people.json): name, city and bio match the
+ * person in the photo, so each demo profile is a single coherent person with one photo.
+ */
+function personPlan(person, index, now) {
+  const uid = `demo-${person.file.replace(/\.jpg$/, "")}`;
+  const birth = birthFor(person.age, now);
+  const lat = round2(person.lat);
+  const lng = round2(person.lng);
+  const byId = Object.fromEntries(PROMPTS.map((p) => [p.id, p.question]));
+  return {
+    uid,
+    gender: person.gender,
+    portraitFile: person.file,
+    illustrations: [],
+    profile: {
+      uid,
+      name: person.name,
+      age: ageOn(birth, now),
+      gender: person.gender,
+      interestedIn: person.interestedIn?.length ? person.interestedIn : interestedInFor(person.gender),
+      bio: person.bio,
+      photos: [],
+      prompts: (person.prompts ?? []).filter((p) => byId[p.id]).map((p) => ({ id: p.id, question: byId[p.id], answer: p.answer })),
+      interests: person.interests ?? [],
+      vibes: person.vibes ?? [],
+      lookingFor: person.lookingFor ?? "dating",
+      heightCm: person.heightCm ?? heightFor(person.gender),
+      city: person.city,
+      geohash: geohashForLocation([lat, lng], 5),
+      lat,
+      lng,
+      afterDark: !!person.afterDark,
+      privateAlbumCount: 0,
+      isDemo: true,
+      onboarded: true,
+    },
+    lastActiveMinutesAgo: int(5, 3 * 24 * 60),
+    account: { ...birth, termsVersion: "demo" },
+    likesBack: chance(0.55),
+    matchOnly: { boundaries: person.boundaries ?? [], turnOns: person.turnOns ?? [] },
+  };
+}
+
 // ---------- portraits ----------
 
 /** Portraits grouped by gender, from portraits/manifest.json. */
@@ -326,13 +370,19 @@ async function main() {
   }
 
   // Build every profile up front, in order, so the output is identical across runs.
-  const plans = Array.from({ length: COUNT }, (_, i) => buildProfile(i, now));
+  const peopleFile = join(HERE, "shared", "people.json");
+  const people = existsSync(peopleFile) ? JSON.parse(readFileSync(peopleFile, "utf8")) : null;
+  const plans = people
+    ? people.slice(0, args.count ? COUNT : people.length).map((person, i) => personPlan(person, i, now))
+    : Array.from({ length: COUNT }, (_, i) => buildProfile(i, now));
   const portraits = loadPortraits();
   const used = {};
   for (const plan of plans) {
     const pool = portraits[plan.gender] ?? [];
     const main = [];
-    if (pool.length) {
+    if (plan.portraitFile) {
+      main.push({ id: `${plan.uid}-0`, url: PORTRAIT_BASE + plan.portraitFile, blurhash: await portraitBlurhash(plan.portraitFile) });
+    } else if (pool.length) {
       const i = (used[plan.gender] = (used[plan.gender] ?? -1) + 1);
       const file = pool[i % pool.length];
       main.push({ id: `${plan.uid}-0`, url: PORTRAIT_BASE + file, blurhash: await portraitBlurhash(file) });

@@ -22,11 +22,6 @@ import java.time.LocalDate
 /** Which backend the app is talking to. Preview is the offline, in-memory demo. */
 enum class BackendMode { Firebase, Preview }
 
-sealed interface PhoneVerification {
-    data class CodeSent(val verificationId: String) : PhoneVerification
-    data object AutoVerified : PhoneVerification
-}
-
 /** Thrown by [ProfileRepository.completeAgeGate] when the server says the user is under 18. */
 class UnderageException : Exception("You must be 18 or older to use Ember.")
 
@@ -40,8 +35,6 @@ interface AuthRepository {
     suspend fun signUpWithEmail(email: String, password: String)
     suspend fun sendPasswordReset(email: String)
     suspend fun signInWithGoogle(activity: Activity)
-    suspend fun startPhoneVerification(activity: Activity, phoneNumber: String): PhoneVerification
-    suspend fun confirmPhoneCode(verificationId: String, code: String)
 
     /** Enters the offline demo (Preview mode only). */
     suspend fun enterPreview()

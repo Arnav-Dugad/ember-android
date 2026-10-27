@@ -16,7 +16,6 @@ import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
-import io.github.arnavdugad.ember.data.repo.PhoneVerification
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,7 +27,6 @@ data class AuthUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val info: String? = null,
-    val verificationId: String? = null,
 )
 
 @HiltViewModel
@@ -68,24 +66,7 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun sendCode(activity: Activity, phone: String) {
-        val normalized = phone.filter { it.isDigit() || it == '+' }
-        if (!normalized.startsWith('+') || normalized.length < 8) return fail("Include your country code, e.g. +1 555 123 4567.")
-        run {
-            when (val result = auth.startPhoneVerification(activity, normalized)) {
-                is PhoneVerification.CodeSent -> _state.update { it.copy(verificationId = result.verificationId) }
-                PhoneVerification.AutoVerified -> Unit
-            }
-        }
-    }
-
-    fun confirmCode(code: String) {
-        val id = _state.value.verificationId ?: return
-        if (code.length != 6) return fail("The code is 6 digits.")
-        run { auth.confirmPhoneCode(id, code) }
-    }
-
-    fun resetPhone() = _state.update { AuthUiState() }
+    fun reset() = _state.update { AuthUiState() }
 
     fun clearMessages() = _state.update { it.copy(error = null, info = null) }
 
@@ -107,11 +88,7 @@ class AuthViewModel @Inject constructor(
         is FirebaseAuthInvalidUserException -> "We couldn't find that account."
         is FirebaseAuthInvalidCredentialsException -> "That didn't match. Check and try again."
         is FirebaseNetworkException -> "You're offline. Check your connection."
-        // Newer Firebase projects only send SMS codes on the paid Blaze plan.
-        else -> if (e.message.orEmpty().contains("BILLING_NOT_ENABLED")) {
-            "Phone sign-in isn't available on this server's free plan. Use Google or email instead."
-        } else {
-            e.message ?: "Something went wrong. Please try again."
-        }
+        is androidx.credentials.exceptions.NoCredentialException -> "Add a Google account to this phone first, then try again."
+        else -> e.message ?: "Something went wrong. Please try again."
     }
 }

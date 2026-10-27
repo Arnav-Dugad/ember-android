@@ -63,6 +63,7 @@ import io.github.arnavdugad.ember.core.designsystem.PaginationBars
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
+import io.github.arnavdugad.ember.core.designsystem.shimmer
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.AccessStatus
@@ -98,7 +99,7 @@ fun ProfileDetailScreen(
         if (profile == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (state.loading) {
-                    CircularProgressIndicator(color = colors.accent)
+                    ProfileSkeleton()
                 } else {
                     Text("This profile isn't available anymore.", style = EmberTheme.type.body, color = colors.textSecondary)
                 }
@@ -390,6 +391,22 @@ private fun PrivateAlbumCard(profile: Profile, state: ProfileDetailState, onRequ
                 state.albumAccess == AccessStatus.Denied -> Text("${profile.name} has chosen not to share right now.", style = EmberTheme.type.bodySmall, color = colors.textSecondary)
                 else -> EmberButton("Request access", onClick = onRequest, loading = state.busy, modifier = Modifier.fillMaxWidth())
             }
+        }
+    }
+}
+
+/** Hero, name line, chips and two prompt cards, shimmering in place while the profile loads. */
+@Composable
+private fun ProfileSkeleton() {
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxWidth().aspectRatio(0.78f).shimmer(androidx.compose.ui.graphics.RectangleShape))
+        Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Box(Modifier.width(180.dp).height(30.dp).shimmer(EmberShapes.small))
+            Box(Modifier.width(120.dp).height(16.dp).shimmer(EmberShapes.small))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                repeat(3) { Box(Modifier.width(90.dp).height(32.dp).shimmer(io.github.arnavdugad.ember.core.designsystem.PillShape)) }
+            }
+            repeat(2) { Box(Modifier.fillMaxWidth().height(96.dp).shimmer(EmberShapes.panel)) }
         }
     }
 }

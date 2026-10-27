@@ -41,7 +41,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AlternateEmail
 import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -72,15 +71,15 @@ import io.github.arnavdugad.ember.core.designsystem.RisingEmbers
 import io.github.arnavdugad.ember.core.designsystem.ScreenTitle
 import io.github.arnavdugad.ember.core.designsystem.pressable
 
-private enum class AuthStep { Welcome, Email, Phone }
+private enum class AuthStep { Welcome, Email }
 
-/** Sign-in: a welcome hero, then email, phone or Google. Preview builds skip straight to the demo. */
+/** Sign-in: a welcome hero, then Google or email. Preview builds skip straight to the demo. */
 @Composable
 fun AuthFlow(viewModel: AuthViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var step by rememberSaveable { mutableStateOf(AuthStep.Welcome) }
     BackHandler(enabled = step != AuthStep.Welcome) {
-        viewModel.resetPhone()
+        viewModel.reset()
         step = AuthStep.Welcome
     }
     GlassScene(
@@ -107,13 +106,8 @@ fun AuthFlow(viewModel: AuthViewModel = hiltViewModel()) {
                     onPreview = viewModel::enterPreview,
                     onGoogle = viewModel::signInWithGoogle,
                     onEmail = { step = AuthStep.Email },
-                    onPhone = { step = AuthStep.Phone },
                 )
                 AuthStep.Email -> EmailAuth(state, viewModel, onBack = { step = AuthStep.Welcome })
-                AuthStep.Phone -> PhoneAuth(state, viewModel, onBack = {
-                    viewModel.resetPhone()
-                    step = AuthStep.Welcome
-                })
             }
         }
     }
@@ -127,7 +121,6 @@ private fun Welcome(
     onPreview: () -> Unit,
     onGoogle: (android.app.Activity) -> Unit,
     onEmail: () -> Unit,
-    onPhone: () -> Unit,
 ) {
     val colors = EmberTheme.colors
     val activity = LocalActivity.current
@@ -188,10 +181,7 @@ private fun Welcome(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                GlassButton("Phone", onClick = onPhone, icon = Icons.Rounded.Phone, modifier = Modifier.weight(1f))
-                GlassButton("Email", onClick = onEmail, icon = Icons.Rounded.AlternateEmail, modifier = Modifier.weight(1f))
-            }
+            GlassButton("Continue with email", onClick = onEmail, icon = Icons.Rounded.AlternateEmail, modifier = Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(20.dp))
         Text(
@@ -267,50 +257,6 @@ private fun EmailAuth(state: AuthUiState, viewModel: AuthViewModel, onBack: () -
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun PhoneAuth(state: AuthUiState, viewModel: AuthViewModel, onBack: () -> Unit) {
-    val activity = LocalActivity.current
-    var phone by rememberSaveable { mutableStateOf("") }
-    var code by rememberSaveable { mutableStateOf("") }
-    val codeSent = state.verificationId != null
-    AuthPage(
-        title = if (codeSent) "Enter your code" else "What's your number?",
-        subtitle = if (codeSent) "We texted a 6-digit code to $phone." else "We'll text you a code. Your number is never shown to anyone.",
-        onBack = onBack,
-    ) {
-        if (!codeSent) {
-            EmberTextField(
-                phone,
-                { phone = it },
-                label = "Phone number",
-                placeholder = "+1 555 123 4567",
-                keyboardType = KeyboardType.Phone,
-                imeAction = ImeAction.Done,
-                onImeAction = { activity?.let { viewModel.sendCode(it, phone) } },
-            )
-        } else {
-            EmberTextField(
-                code,
-                { if (it.all(Char::isDigit)) code = it },
-                label = "Verification code",
-                placeholder = "123456",
-                maxLength = 6,
-                keyboardType = KeyboardType.NumberPassword,
-                imeAction = ImeAction.Done,
-                onImeAction = { viewModel.confirmCode(code) },
-            )
-        }
-        Messages(state)
-        Spacer(Modifier.height(24.dp))
-        EmberButton(
-            if (codeSent) "Verify" else "Send code",
-            onClick = { if (codeSent) viewModel.confirmCode(code) else activity?.let { viewModel.sendCode(it, phone) } },
-            loading = state.loading,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 

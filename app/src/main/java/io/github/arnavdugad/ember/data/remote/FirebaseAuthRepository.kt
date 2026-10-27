@@ -8,30 +8,21 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.PhoneAuthCredential
-import com.google.firebase.auth.PhoneAuthOptions
-import com.google.firebase.auth.PhoneAuthProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
-import io.github.arnavdugad.ember.data.repo.PhoneVerification
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 @Singleton
 class FirebaseAuthRepository @Inject constructor(
@@ -75,48 +66,17 @@ class FirebaseAuthRepository @Inject constructor(
         val option = GetSignInWithGoogleOption.Builder(webClientId()).build()
         val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
         val credential = CredentialManager.create(activity).getCredential(activity, request).credential
-        check(credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-            "Google didn't return an account."
+        // The "Sign in with Google" sheet returns the SIWG subtype; the One Tap picker returns the
+        // plain one. Both carry the same ID token.
+        val googleTypes = setOf(
+            GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL,
+            GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL,
+        )
+        check(credential is CustomCredential && credential.type in googleTypes) {
+            "Google didn't return an account (got ${credential.type})."
         }
         val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
         auth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null)).await()
-    }
-
-    override suspend fun startPhoneVerification(activity: Activity, phoneNumber: String): PhoneVerification =
-        suspendCancellableCoroutine { cont ->
-            val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
-                override fun onVerificationCompleted(credential: PhoneAuthCredential) {
-                    // Instant verification or SMS auto-retrieval. Signing in updates the session
-                    // even if the code screen is already showing.
-                    auth.signInWithCredential(credential).addOnCompleteListener { task ->
-                        if (!cont.isActive) return@addOnCompleteListener
-                        if (task.isSuccessful) {
-                            cont.resume(PhoneVerification.AutoVerified)
-                        } else {
-                            cont.resumeWithException(task.exception ?: IllegalStateException("Verification failed"))
-                        }
-                    }
-                }
-
-                override fun onVerificationFailed(e: FirebaseException) {
-                    if (cont.isActive) cont.resumeWithException(e)
-                }
-
-                override fun onCodeSent(verificationId: String, token: PhoneAuthProvider.ForceResendingToken) {
-                    if (cont.isActive) cont.resume(PhoneVerification.CodeSent(verificationId))
-                }
-            }
-            val options = PhoneAuthOptions.newBuilder(auth)
-                .setPhoneNumber(phoneNumber)
-                .setTimeout(60L, TimeUnit.SECONDS)
-                .setActivity(activity)
-                .setCallbacks(callbacks)
-                .build()
-            PhoneAuthProvider.verifyPhoneNumber(options)
-        }
-
-    override suspend fun confirmPhoneCode(verificationId: String, code: String) {
-        auth.signInWithCredential(PhoneAuthProvider.getCredential(verificationId, code.trim())).await()
     }
 
     override suspend fun enterPreview() = error("Preview mode is only available without a Firebase project.")

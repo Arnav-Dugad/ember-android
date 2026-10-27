@@ -69,6 +69,6 @@ object Geo {
     fun distanceLabel(km: Int?): String? = when {
         km == null -> null
         km <= 2 -> "Nearby"
-        else -> "$km km away"
+        else -> "%,d km away".format(km)
     }
 }

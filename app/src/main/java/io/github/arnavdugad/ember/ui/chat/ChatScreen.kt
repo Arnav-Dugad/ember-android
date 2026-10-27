@@ -62,7 +62,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -111,6 +113,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
     var gameOpen by remember { mutableStateOf(false) }
     var safetyOpen by remember { mutableStateOf(false) }
     val revealed = remember { mutableStateListOf<String>() }
+    var toast by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let(viewModel::sendImage) }
     LaunchedEffect(ui.removed) { if (ui.removed) onRemoved() }
@@ -146,6 +149,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                         mine = mine,
                         timeLabel = if (showTime) message.createdAt?.let(::chatTime) else null,
                         topGap = if (grouped) 0.dp else 8.dp,
+                        copied = { toast = "Copied" },
                         revealed = mine || message.id in revealed,
                         onReveal = { revealed += message.id },
                         receipt = if (message.id == lastMineId && m != null) receiptFor(message, m) else null,
@@ -189,6 +193,20 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             }
         }
 
+        toast?.let { text ->
+            LaunchedEffect(text) {
+                kotlinx.coroutines.delay(1_200)
+                toast = null
+            }
+            GlassSurface(
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 80.dp),
+                shape = PillShape,
+                style = GlassDefaults.chrome(),
+                elevated = true,
+            ) {
+                Text(text, style = EmberTheme.type.bodySmall, color = colors.textPrimary, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+            }
+        }
         TruthOrDareSheet(
             visible = gameOpen,
             draw = viewModel::drawCard,
@@ -268,8 +286,12 @@ private fun MessageBubble(
     modifier: Modifier = Modifier,
     timeLabel: String? = null,
     topGap: androidx.compose.ui.unit.Dp = 8.dp,
+    copied: () -> Unit = {},
 ) {
     val colors = EmberTheme.colors
+    @Suppress("DEPRECATION")
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val haptics = EmberTheme.haptics
     Column(modifier.fillMaxWidth().padding(top = topGap), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         if (timeLabel != null) {
             Text(
@@ -286,6 +308,13 @@ private fun MessageBubble(
             MessageType.Text -> Box(
                 Modifier
                     .widthIn(max = 290.dp)
+                    .pointerInput(message.id) {
+                        detectTapGestures(onLongPress = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(message.text))
+                            haptics.confirm()
+                            copied()
+                        })
+                    }
                     .then(
                         if (mine) {
                             Modifier.background(colors.accentBrush, EmberShapes.bubble)

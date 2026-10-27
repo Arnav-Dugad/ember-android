@@ -93,6 +93,7 @@ fun DiscoverScreen(
     val controller = remember { DeckController() }
     val scope = rememberCoroutineScope()
     var filtersOpen by remember { mutableStateOf(false) }
+    var superBurst by remember { mutableStateOf(0L) }
     val haptics = EmberTheme.haptics
 
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(tint = state.glow) }) {
@@ -128,7 +129,10 @@ fun DiscoverScreen(
                         DeckPhase.Deck -> SwipeDeck(
                             profiles = state.deck,
                             controller = controller,
-                            onSwiped = viewModel::onSwiped,
+                            onSwiped = { profile, dir ->
+                                if (dir == SwipeDirection.Super) superBurst = System.nanoTime()
+                                viewModel.onSwiped(profile, dir)
+                            },
                             onOpen = { profile, index -> onOpenProfile(profile.uid, index) },
                             modifier = Modifier.fillMaxSize(),
                         )
@@ -175,6 +179,8 @@ fun DiscoverScreen(
                 Text(error.orEmpty(), style = EmberTheme.type.bodySmall, color = EmberTheme.colors.textPrimary, modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp))
             }
         }
+
+        if (superBurst != 0L) SuperLikeBurst(superBurst)
 
         FiltersSheet(
             visible = filtersOpen,
@@ -383,6 +389,32 @@ private fun FiltersSheet(
                 )
             },
             modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** A blue star that pops and fades over the deck when someone is super-liked. */
+@Composable
+private fun SuperLikeBurst(key: Long) {
+    val colors = EmberTheme.colors
+    val progress = remember(key) { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(key) { progress.animateTo(1f, tween(650)) }
+    val t = progress.value
+    if (t >= 1f) return
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Icon(
+            Icons.Rounded.Star,
+            contentDescription = null,
+            tint = colors.superLike,
+            modifier = Modifier
+                .size(160.dp)
+                .graphicsLayer {
+                    val s = 0.4f + t * 1.1f
+                    scaleX = s
+                    scaleY = s
+                    alpha = (1f - t) * (1f - t)
+                    rotationZ = t * 40f
+                },
         )
     }
 }
