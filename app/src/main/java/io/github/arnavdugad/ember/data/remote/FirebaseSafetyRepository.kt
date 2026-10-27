@@ -26,12 +26,19 @@ class FirebaseSafetyRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val db: FirebaseFirestore,
     private val account: Account,
+    private val games: FirebaseGameRepository,
 ) : SafetyRepository {
     private val users get() = db.collection("users")
 
+    /** Also ends any group game built on this match: I leave theirs, and take them out of mine. */
     override suspend fun unmatch(matchId: String) {
         val uid = auth.requireUid()
         val other = matchId.split("_").firstOrNull { it != uid } ?: return
+        runCatching { games.separateFrom(other, onlyHostedTogether = true) }
+        deleteThread(matchId, uid, other)
+    }
+
+    private suspend fun deleteThread(matchId: String, uid: String, other: String) {
         val match = db.collection("matches").document(matchId)
         deleteAll(match.collection("messages"))
         deleteAll(match.collection("images"))
@@ -50,6 +57,8 @@ class FirebaseSafetyRepository @Inject constructor(
         batch.set(users.document(me).collection("blocks").document(uid), mapOf("createdAt" to FieldValue.serverTimestamp()))
         batch.set(users.document(uid).collection("hiddenBy").document(me), mapOf("createdAt" to FieldValue.serverTimestamp()))
         batch.commit().await()
+        // Out of every group game we share (rules already stop either of us posting in one).
+        runCatching { games.separateFrom(uid, onlyHostedTogether = false) }
         val matchId = listOf(me, uid).sorted().joinToString("_")
         if (db.collection("matches").document(matchId).get().await().exists()) unmatch(matchId)
     }
@@ -104,14 +113,19 @@ class FirebaseSafetyRepository @Inject constructor(
         val uid = user.uid
         val me = users.document(uid)
 
-        // 1. Matches first: deleting a thread needs the user to still be a verified adult.
-        db.collection("matches").whereArrayContains("users", uid).get().await().documents.forEach { unmatch(it.id) }
+        // 1. Group games: out of every one, my moves deleted, the games I host ended and deleted.
+        runCatching { games.leaveAll() }
 
-        // 2. The account doc next. Once it's gone, the rules let the owner clear old swipes too.
+        // 2. Matches: deleting a thread needs the user to still be a verified adult.
+        db.collection("matches").whereArrayContains("users", uid).get().await().documents.forEach { match ->
+            match.id.split("_").firstOrNull { it != uid }?.let { other -> deleteThread(match.id, uid, other) }
+        }
+
+        // 3. The account doc next. Once it's gone, the rules let the owner clear old swipes too.
         account.accountRef(uid).delete().await()
         account.forget()
 
-        // 3. Everything else the user owns or created. Each step stands alone so one failure
+        // 4. Everything else the user owns or created. Each step stands alone so one failure
         //    can't leave the rest behind; the profile and login go last.
         runCatching {
             me.collection("swipes").get().await().documents.forEach { swipe ->

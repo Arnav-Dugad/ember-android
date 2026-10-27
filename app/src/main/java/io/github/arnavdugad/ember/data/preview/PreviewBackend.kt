@@ -15,6 +15,11 @@ import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
+import io.github.arnavdugad.ember.data.model.GameMove
+import io.github.arnavdugad.ember.data.model.GameMoveType
+import io.github.arnavdugad.ember.data.model.GamePlayer
+import io.github.arnavdugad.ember.data.model.GroupGame
+import io.github.arnavdugad.ember.data.model.GroupGames
 import io.github.arnavdugad.ember.data.model.LastMessage
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
@@ -32,6 +37,7 @@ import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
+import io.github.arnavdugad.ember.data.repo.GameRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
@@ -75,7 +81,8 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     MatchRepository,
     AlbumRepository,
     SafetyRepository,
-    PrivacyRepository {
+    PrivacyRepository,
+    GameRepository {
 
     override val mode = BackendMode.Preview
 
@@ -434,10 +441,126 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
         messages.value = emptyMap()
         album.value = emptyList()
         access.value = emptyMap()
+        games.value = emptyMap()
+        gameMoves.value = emptyMap()
         myAge = 0
         stored = null
         store.wipe()
         authUser.value = null
+    }
+
+    // --- Group Truth or Dare ---
+    //
+    // In memory only. Every Preview match is a demo profile, and demo profiles can't be invited
+    // (they could never accept), so Preview offers a solo practice game: the same screen, turns
+    // and cards, with you as the only player.
+
+    private val games = MutableStateFlow<Map<String, GroupGame>>(emptyMap())
+    private val gameMoves = MutableStateFlow<Map<String, List<GameMove>>>(emptyMap())
+
+    override fun observeGames(): Flow<List<GroupGame>> =
+        games.map { all -> GroupGames.sorted(all.values.filter { it.isLive() }, ME) }
+
+    override fun observeGame(gameId: String): Flow<GroupGame?> = games.map { it[gameId] }
+
+    override fun observeMoves(gameId: String): Flow<List<GameMove>> = gameMoves.map { it[gameId].orEmpty() }
+
+    override suspend fun inviteCandidates(): List<GamePlayer> =
+        GroupGames.invitable(matches.value.values.toList(), blocked).map {
+            GamePlayer(it.otherUid, GroupGames.firstName(it.otherName), it.otherPhotoUrl, it.otherBlurHash)
+        }
+
+    override suspend fun createGame(invitees: List<GamePlayer>): String {
+        if (invitees.isNotEmpty()) GroupGames.inviteProblem(ME, invitees.map { it.uid })?.let { error(it) }
+        val profile = me.value
+        val mine = GamePlayer(ME, GroupGames.firstName(profile?.name.orEmpty()), profile?.firstPhoto?.url, profile?.firstPhoto?.blurHash)
+        val now = Instant.now()
+        val game = GroupGame(
+            id = newId(),
+            hostUid = ME,
+            members = listOf(ME),
+            invited = invitees.map { it.uid },
+            players = mapOf(ME to mine) + invitees.associate { it.uid to GamePlayer(it.uid, GroupGames.firstName(it.name)) },
+            ended = false,
+            turnUid = ME,
+            turnNo = 0,
+            card = null,
+            createdAt = now,
+            updatedAt = now,
+        )
+        games.update { it + (game.id to game) }
+        return game.id
+    }
+
+    /** Nobody invites the Preview user, so there's never anything to accept. */
+    override suspend fun accept(gameId: String) = Unit
+
+    override suspend fun decline(gameId: String) = leave(gameId)
+
+    override suspend fun leave(gameId: String) = removePlayer(gameId, ME)
+
+    override suspend fun removePlayer(gameId: String, uid: String) = updateGame(gameId) { GroupGames.without(it, uid) }
+
+    override suspend fun endGame(gameId: String) {
+        games.update { it - gameId }
+        gameMoves.update { it - gameId }
+    }
+
+    override suspend fun pickCard(gameId: String, card: GameCard) = updateGame(gameId) { game ->
+        check(game.turnUid == ME && game.card == null) { "It's not your turn to draw." }
+        game.copy(card = card, updatedAt = Instant.now())
+    }
+
+    override suspend fun answer(gameId: String, text: String, pass: Boolean) {
+        val game = games.value[gameId] ?: error("This game is over.")
+        val card = game.card ?: error("Pick Truth or Dare first.")
+        check(game.turnUid == ME) { "It's not your turn anymore." }
+        val trimmed = text.trim().take(GroupGames.MAX_TEXT)
+        require(pass || trimmed.isNotEmpty()) { "Write an answer, or pass." }
+        val move = GameMove(
+            GroupGames.answerId(game.turnNo), ME, GameMoveType.Answer, if (pass) "" else trimmed,
+            card = card, pass = pass, createdAt = Instant.now(),
+        )
+        gameMoves.update { it + (gameId to (listOf(move) + it[gameId].orEmpty())) }
+        updateGame(gameId) { GroupGames.advanced(it).copy(updatedAt = Instant.now()) }
+    }
+
+    override suspend fun skipTurn(gameId: String) = updateGame(gameId) { GroupGames.advanced(it).copy(updatedAt = Instant.now()) }
+
+    override suspend fun sendChat(gameId: String, text: String) {
+        val trimmed = text.trim().take(GroupGames.MAX_TEXT)
+        if (trimmed.isEmpty()) return
+        val move = GameMove(newId(), ME, GameMoveType.Chat, trimmed, createdAt = Instant.now())
+        gameMoves.update { it + (gameId to (listOf(move) + it[gameId].orEmpty())) }
+        updateGame(gameId) { it.copy(updatedAt = Instant.now()) }
+    }
+
+    override suspend fun reactToMove(gameId: String, moveId: String, emoji: String?) {
+        require(emoji == null || emoji in Reactions.all) { "That reaction isn't available." }
+        gameMoves.update { all ->
+            val list = all[gameId] ?: return@update all
+            all + (gameId to list.map { m ->
+                if (m.id != moveId) m else m.copy(reactions = if (emoji == null) m.reactions - ME else m.reactions + (ME to emoji))
+            })
+        }
+    }
+
+    override suspend fun separateFrom(uid: String, onlyHostedTogether: Boolean) {
+        games.value.values.filter { uid in it.members || uid in it.invited }.forEach { removePlayer(it.id, uid) }
+    }
+
+    override suspend fun sweep() {
+        games.value.values.filterNot { it.isLive() }.forEach { endGame(it.id) }
+    }
+
+    override suspend fun leaveAll() {
+        games.value = emptyMap()
+        gameMoves.value = emptyMap()
+    }
+
+    private fun updateGame(gameId: String, change: (GroupGame) -> GroupGame) = games.update { all ->
+        val game = all[gameId] ?: return@update all
+        all + (gameId to change(game))
     }
 
     // --- Privacy ---

@@ -66,6 +66,10 @@ import io.github.arnavdugad.ember.ui.album.MyAlbumScreen
 import io.github.arnavdugad.ember.ui.chat.ChatScreen
 import io.github.arnavdugad.ember.ui.discover.DiscoverScreen
 import io.github.arnavdugad.ember.ui.discover.DiscoverViewModel
+import io.github.arnavdugad.ember.ui.game.GroupGameScreen
+import io.github.arnavdugad.ember.ui.game.GroupGamesSection
+import io.github.arnavdugad.ember.ui.game.LocalGroupGameLauncher
+import io.github.arnavdugad.ember.ui.game.NewGroupGameScreen
 import io.github.arnavdugad.ember.ui.likes.LikesYouScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesViewModel
@@ -107,6 +111,11 @@ import kotlinx.serialization.Serializable
 @Serializable data object LikesYouRoute
 
 @Serializable data class AlbumViewerRoute(val ownerUid: String, val ownerName: String)
+
+/** Group Truth or Dare: pick who to invite. [fromMatchId] (a 1:1 chat) starts out picked. */
+@Serializable data class NewGroupGameRoute(val fromMatchId: String? = null)
+
+@Serializable data class GroupGameRoute(val gameId: String)
 
 /** Height reserved at the bottom of tab screens for the floating nav bar. */
 val BottomBarSpace = 96.dp
@@ -198,7 +207,12 @@ fun MainScaffold(deepLinks: DeepLinks) {
                         }
                     }
                     composable<MatchesRoute>(enterTransition = { fadeIn() }, exitTransition = { fadeOut() }) {
-                        MatchesScreen(matchesVm, onOpenChat = { nav.navigate(ChatRoute(it)) })
+                        MatchesScreen(
+                            matchesVm,
+                            onOpenChat = { nav.navigate(ChatRoute(it)) },
+                            onNewGroupGame = { nav.navigate(NewGroupGameRoute()) },
+                            groupGames = { GroupGamesSection(onOpenGame = { nav.navigate(GroupGameRoute(it)) }) },
+                        )
                     }
                     composable<MeRoute>(enterTransition = { fadeIn() }, exitTransition = { fadeOut() }) {
                         MeScreen(
@@ -230,8 +244,9 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     }
                     composable<ChatRoute> { backStack ->
                         val route = backStack.toRoute<ChatRoute>()
+                        val openGroupGame = remember(route.matchId) { { nav.navigate(NewGroupGameRoute(route.matchId)) } }
                         // The top-bar avatar flies into the profile's hero photo.
-                        CompositionLocalProvider(LocalNavScope provides this) {
+                        CompositionLocalProvider(LocalNavScope provides this, LocalGroupGameLauncher provides openGroupGame) {
                             ChatScreen(
                                 matchId = route.matchId,
                                 onBack = { nav.popBackStack() },
@@ -259,6 +274,17 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     composable<AlbumViewerRoute> { backStack ->
                         val route = backStack.toRoute<AlbumViewerRoute>()
                         AlbumViewerScreen(ownerUid = route.ownerUid, ownerName = route.ownerName, onBack = { nav.popBackStack() })
+                    }
+                    composable<NewGroupGameRoute> { backStack ->
+                        val route = backStack.toRoute<NewGroupGameRoute>()
+                        NewGroupGameScreen(
+                            fromMatchId = route.fromMatchId,
+                            onBack = { nav.popBackStack() },
+                            onCreated = { id -> nav.navigate(GroupGameRoute(id)) { popUpTo<NewGroupGameRoute> { inclusive = true } } },
+                        )
+                    }
+                    composable<GroupGameRoute> { backStack ->
+                        GroupGameScreen(gameId = backStack.toRoute<GroupGameRoute>().gameId, onBack = { nav.popBackStack() })
                     }
                 }
             }

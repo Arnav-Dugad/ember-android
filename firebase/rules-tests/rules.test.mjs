@@ -676,3 +676,367 @@ describe("reports and the daily report limit", () => {
     await assertSucceeds(sendReport(BOB, 1));
   });
 });
+
+// ---------- group Truth or Dare (games/{gameId}) ----------
+// Kept in one block so it merges cleanly with the rest of this file. Imports are hoisted, so
+// these extra ones can live here.
+import { arrayRemove, arrayUnion, increment } from "firebase/firestore";
+
+describe("group truth or dare", () => {
+  const CAT = "cat";
+  const DAN = "dan";
+  const GAME = "g1";
+  const HOUR = 3600_000;
+
+  const player = (name, photo) => (photo
+    ? { name, photoUrl: `ember-fs://images/${name}`, blurhash: "LEHV6nWB2yk8" }
+    : { name, photoUrl: null, blurhash: null });
+
+  // What the host's client writes.
+  const newGame = (invited, extra = {}) => ({
+    host: ALICE,
+    members: [ALICE],
+    invited,
+    profiles: Object.fromEntries([[ALICE, player("Alice", true)], ...invited.map((uid) => [uid, player(uid, false)])]),
+    status: "active",
+    turn: ALICE,
+    turnNo: 0,
+    card: null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ...extra,
+  });
+
+  // A game already under way, written with rules off.
+  async function seedGame({ members = [ALICE, BOB], invited = [CAT], turn = ALICE, turnNo = 0, card = null, status = "active", idleHours = 0 } = {}) {
+    const at = new Date(Date.now() - idleHours * HOUR);
+    await seed((fs) => setDoc(doc(fs, `games/${GAME}`), {
+      host: ALICE,
+      members,
+      invited,
+      profiles: Object.fromEntries([...members.map((u) => [u, player(u, true)]), ...invited.map((u) => [u, player(u, false)])]),
+      status,
+      turn,
+      turnNo,
+      card,
+      createdAt: at,
+      updatedAt: at,
+    }));
+  }
+
+  const game = (uid) => doc(db(uid), `games/${GAME}`);
+  const move = (uid, id) => doc(db(uid), `games/${GAME}/moves/${id}`);
+  const dare = { mode: "dare", prompt: "Plan our first date in exactly five emojis." };
+
+  // The current player's answer, written with the turn advance, as the client does it.
+  function answer(uid, { turnNo = 0, next, text = "🍝🎡🌙🚕💋", pass = false, card = dare, id = `t${turnNo}`, advance = true, extra = {} } = {}) {
+    const fs = db(uid);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `games/${GAME}/moves/${id}`), {
+      senderId: uid, type: "answer", text, mode: card.mode, prompt: card.prompt, pass, turnNo, createdAt: serverTimestamp(), ...extra,
+    });
+    if (advance) batch.update(doc(fs, `games/${GAME}`), { turn: next, turnNo: increment(1), card: null, updatedAt: serverTimestamp() });
+    return batch.commit();
+  }
+
+  // A chat line, written with a touch of the game's updatedAt.
+  function chat(uid, text = "this is chaos", { touch = true, extra = {}, id = Math.random().toString(36).slice(2) } = {}) {
+    const fs = db(uid);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `games/${GAME}/moves/${id}`), { senderId: uid, type: "chat", text, createdAt: serverTimestamp(), ...extra });
+    if (touch) batch.update(doc(fs, `games/${GAME}`), { updatedAt: serverTimestamp() });
+    return batch.commit();
+  }
+
+  const accept = (uid, extra = {}) => updateDoc(game(uid), {
+    invited: arrayRemove(uid), members: arrayUnion(uid), [`profiles.${uid}`]: player(uid, true), updatedAt: serverTimestamp(), ...extra,
+  });
+
+  const decline = (uid) => updateDoc(game(uid), { invited: arrayRemove(uid), [`profiles.${uid}`]: deleteField() });
+
+  beforeEach(async () => {
+    await seed(async (fs) => {
+      for (const uid of [CAT, DAN]) {
+        await setDoc(doc(fs, `users/${uid}/private/account`), { ...adultBirth, termsVersion: "2026-10", termsAcceptedAt: new Date() });
+        await setDoc(doc(fs, `users/${uid}`), { uid, name: uid, age: adultAge, onboarded: true, lastActiveAt: new Date() });
+      }
+      for (const other of [CAT, DAN]) {
+        await setDoc(doc(fs, `matches/alice_${other}`), { users: [ALICE, other], lastRead: {}, profiles: {}, lastMessage: null, isDemo: false });
+      }
+      await setDoc(doc(fs, `matches/alice_${DEMO}`), { users: [ALICE, DEMO], lastRead: {}, profiles: {}, lastMessage: null, isDemo: true });
+    });
+  });
+
+  test("the host invites one to three of their matches", async () => {
+    await assertSucceeds(setDoc(game(ALICE), newGame([BOB, CAT, DAN])));
+    await assertSucceeds(setDoc(doc(db(ALICE), "games/g2"), newGame([BOB])));
+  });
+
+  test("never more than four players, never strangers", async () => {
+    await seed((fs) => setDoc(doc(fs, "matches/alice_eve"), { users: [ALICE, EVE], lastRead: {}, profiles: {}, lastMessage: null }));
+    await assertFails(setDoc(game(ALICE), newGame([BOB, CAT, DAN, EVE])));
+    await assertFails(setDoc(game(ALICE), newGame([])));
+    await seed((fs) => deleteDoc(doc(fs, "matches/alice_eve")));
+    await assertFails(setDoc(game(ALICE), newGame([BOB, EVE]))); // not matched with Eve
+    await assertFails(setDoc(game(EVE), newGame([BOB], { host: EVE, members: [EVE], turn: EVE }))); // Eve isn't matched with Bob
+    await assertFails(setDoc(game(BOB), newGame([CAT]))); // the host must be the writer
+    await assertFails(setDoc(game(ALICE), newGame([BOB, BOB])));
+    await assertFails(setDoc(game(ALICE), newGame([ALICE])));
+    await assertFails(setDoc(doc(db("stranger"), `games/${GAME}`), newGame([BOB], { host: "stranger", members: ["stranger"], turn: "stranger" })));
+  });
+
+  test("a new game's fields are strict", async () => {
+    const bad = [
+      { members: [ALICE, BOB] },
+      { turn: BOB },
+      { turnNo: 3 },
+      { status: "ended" },
+      { card: dare },
+      { createdAt: new Date(0) },
+      { updatedAt: new Date(0) },
+      { score: 10 },
+      // Invitees appear by first name only; their photo arrives when they accept.
+      { profiles: { [ALICE]: player("Alice", true), [BOB]: player("Bob", true) } },
+      { profiles: { [ALICE]: player("Alice", true) } },
+      { profiles: { [ALICE]: player("Alice", true), [BOB]: player("Bob", false), [EVE]: player("Eve", false) } },
+      { profiles: { [ALICE]: player("x".repeat(41), true), [BOB]: player("Bob", false) } },
+      { profiles: { [ALICE]: { ...player("Alice", true), bio: "hi" }, [BOB]: player("Bob", false) } },
+      { profiles: { [ALICE]: { ...player("Alice", true), photoUrl: "https://tracker.example/a.jpg" }, [BOB]: player("Bob", false) } },
+    ];
+    for (const extra of bad) await assertFails(setDoc(game(ALICE), newGame([BOB], extra)));
+  });
+
+  test("demo profiles and blocks either way can't be invited", async () => {
+    await assertFails(setDoc(game(ALICE), newGame([DEMO])));
+    await seed((fs) => setDoc(doc(fs, "users/alice/blocks/cat"), { createdAt: new Date() }));
+    await assertFails(setDoc(game(ALICE), newGame([CAT])));
+    await assertFails(setDoc(game(ALICE), newGame([BOB, CAT])));
+    await seed((fs) => setDoc(doc(fs, "users/dan/blocks/alice"), { createdAt: new Date() }));
+    await assertFails(setDoc(game(ALICE), newGame([DAN])));
+    await assertSucceeds(setDoc(game(ALICE), newGame([BOB])));
+  });
+
+  test("only players read the game; only members read the moves", async () => {
+    await seedGame();
+    await seed((fs) => setDoc(doc(fs, `games/${GAME}/moves/t0`), { senderId: ALICE, type: "chat", text: "hi", createdAt: new Date() }));
+    await assertSucceeds(getDoc(game(ALICE)));
+    await assertSucceeds(getDoc(game(BOB)));
+    await assertSucceeds(getDoc(game(CAT))); // the invite
+    await assertFails(getDoc(game(EVE)));
+    await assertFails(getDoc(game("stranger")));
+    await assertSucceeds(getDocs(query(collection(db(BOB), "games"), where("members", "array-contains", BOB))));
+    await assertSucceeds(getDocs(query(collection(db(CAT), "games"), where("invited", "array-contains", CAT))));
+    await assertFails(getDocs(query(collection(db(EVE), "games"), where("members", "array-contains", BOB))));
+    await assertFails(getDocs(collection(db(ALICE), "games")));
+    await assertSucceeds(getDoc(move(BOB, "t0")));
+    await assertSucceeds(getDocs(collection(db(BOB), `games/${GAME}/moves`)));
+    await assertFails(getDoc(move(CAT, "t0"))); // invited, not yet in
+    await assertFails(getDocs(collection(db(CAT), `games/${GAME}/moves`)));
+    await assertFails(getDoc(move(EVE, "t0")));
+  });
+
+  test("invitees accept for themselves, at the end of the line", async () => {
+    await seedGame({ invited: [CAT, DAN] });
+    await assertFails(accept(EVE));
+    await assertFails(updateDoc(game(BOB), {
+      invited: arrayRemove(CAT), members: arrayUnion(CAT), [`profiles.${CAT}`]: player(CAT, true), updatedAt: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(game(CAT), { invited: [DAN], members: [CAT, ALICE, BOB], [`profiles.${CAT}`]: player(CAT, true), updatedAt: serverTimestamp() }));
+    await assertFails(accept(CAT, { [`profiles.${BOB}`]: player("Bobby", true) }));
+    // Only Ember's own image docs as photos: no outside URL that would log the others' IPs.
+    await assertFails(accept(CAT, { [`profiles.${CAT}`]: { name: "Cat", photoUrl: "https://tracker.example/p.jpg", blurhash: null } }));
+    await assertFails(accept(CAT, { turn: CAT }));
+    await assertFails(accept(CAT, { updatedAt: new Date(0) }));
+    await assertSucceeds(accept(CAT));
+    const after = (await getDoc(game(ALICE))).data();
+    if (after.members.join() !== "alice,bob,cat" || after.invited.join() !== "dan") throw new Error(`unexpected ${JSON.stringify(after)}`);
+    await assertSucceeds(getDocs(collection(db(CAT), `games/${GAME}/moves`)));
+    await assertSucceeds(accept(DAN));
+  });
+
+  test("no joining next to someone with a block either way, after unmatching, or once it's over", async () => {
+    await seedGame({ invited: [CAT, DAN] });
+    await seed((fs) => setDoc(doc(fs, "users/bob/blocks/cat"), { createdAt: new Date() }));
+    await assertFails(accept(CAT));
+    await seed((fs) => setDoc(doc(fs, "users/dan/blocks/bob"), { createdAt: new Date() }));
+    await assertFails(accept(DAN));
+
+    await seed(async (fs) => {
+      await deleteDoc(doc(fs, "users/bob/blocks/cat"));
+      await deleteDoc(doc(fs, "matches/alice_cat"));
+    });
+    await assertFails(accept(CAT)); // no longer matched with the host
+
+    await seed((fs) => setDoc(doc(fs, "matches/alice_cat"), { users: [ALICE, CAT], lastRead: {}, profiles: {}, lastMessage: null }));
+    await seedGame({ idleHours: 25 });
+    await assertFails(accept(CAT));
+    await seedGame({ status: "ended" });
+    await assertFails(accept(CAT));
+    await seedGame();
+    await assertSucceeds(accept(CAT));
+  });
+
+  test("declining, leaving and the host taking someone out", async () => {
+    await seedGame({ members: [ALICE, BOB, DAN], invited: [CAT] });
+    await assertFails(updateDoc(game(CAT), { invited: arrayRemove(CAT) })); // the card must go too
+    await assertFails(updateDoc(game(CAT), { invited: arrayRemove(CAT), [`profiles.${CAT}`]: deleteField(), [`profiles.${BOB}`]: deleteField() }));
+    await assertFails(updateDoc(game(BOB), { invited: arrayRemove(CAT), [`profiles.${CAT}`]: deleteField() })); // only Cat, or the host
+    await assertSucceeds(decline(CAT));
+
+    // Not my turn: the turn stays where it is.
+    await assertSucceeds(updateDoc(game(DAN), { members: arrayRemove(DAN), [`profiles.${DAN}`]: deleteField() }));
+    // The host can't walk out of their own game, only end it.
+    await assertFails(updateDoc(game(ALICE), { members: arrayRemove(ALICE), [`profiles.${ALICE}`]: deleteField() }));
+
+    // My turn: leaving hands it to the next member.
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [], turn: BOB, turnNo: 4, card: dare });
+    await assertFails(updateDoc(game(BOB), { members: arrayRemove(BOB), [`profiles.${BOB}`]: deleteField() }));
+    await assertFails(updateDoc(game(BOB), { members: arrayRemove(BOB), [`profiles.${BOB}`]: deleteField(), turn: ALICE, turnNo: 5, card: null }));
+    await assertSucceeds(updateDoc(game(BOB), { members: arrayRemove(BOB), [`profiles.${BOB}`]: deleteField(), turn: CAT, turnNo: 5, card: null }));
+
+    // The host takes someone out; nobody else can, and only one at a time.
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [DAN], turn: CAT, turnNo: 2 });
+    await assertFails(updateDoc(game(BOB), { members: arrayRemove(CAT), [`profiles.${CAT}`]: deleteField(), turn: ALICE, turnNo: 3, card: null }));
+    await assertFails(updateDoc(game(ALICE), {
+      members: arrayRemove(BOB), invited: arrayRemove(DAN), [`profiles.${BOB}`]: deleteField(), [`profiles.${DAN}`]: deleteField(),
+    }));
+    await assertSucceeds(updateDoc(game(ALICE), { invited: arrayRemove(DAN), [`profiles.${DAN}`]: deleteField() }));
+    await assertSucceeds(updateDoc(game(ALICE), { members: arrayRemove(CAT), [`profiles.${CAT}`]: deleteField(), turn: ALICE, turnNo: 3, card: null }));
+  });
+
+  test("leaving works without an account doc, so account deletion can always do it", async () => {
+    await seedGame({ members: [ALICE, BOB], invited: [CAT] });
+    await seed(async (fs) => {
+      await deleteDoc(doc(fs, "users/bob/private/account"));
+      await deleteDoc(doc(fs, "users/cat/private/account"));
+    });
+    await assertSucceeds(decline(CAT));
+    await assertSucceeds(updateDoc(game(BOB), { members: arrayRemove(BOB), [`profiles.${BOB}`]: deleteField() }));
+  });
+
+  test("only the current player draws a card, once per turn", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [] });
+    const pick = (uid, card = dare, extra = {}) => updateDoc(game(uid), { card, updatedAt: serverTimestamp(), ...extra });
+    await assertFails(pick(BOB));
+    await assertFails(pick(ALICE, { mode: "kiss", prompt: "x" }));
+    await assertFails(pick(ALICE, { mode: "truth", prompt: "x".repeat(301) }));
+    await assertFails(pick(ALICE, { ...dare, extra: true }));
+    await assertFails(pick(ALICE, dare, { turn: BOB }));
+    await assertSucceeds(pick(ALICE));
+    await assertFails(pick(ALICE, { mode: "truth", prompt: "What was your first impression of me?" })); // no fishing for a better card
+  });
+
+  test("only the current player answers, and the turn passes in member order", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [] });
+    await assertFails(answer(ALICE, { next: BOB })); // no card drawn yet
+    await seed((fs) => updateDoc(doc(fs, `games/${GAME}`), { card: dare }));
+    await assertFails(answer(BOB, { next: CAT })); // not Bob's turn
+    await assertFails(answer(ALICE, { next: CAT })); // skips Bob
+    await assertFails(answer(ALICE, { next: BOB, advance: false })); // the turn must move with the answer
+    await assertFails(answer(ALICE, { next: BOB, id: "t7" }));
+    await assertFails(answer(ALICE, { next: BOB, card: { mode: "truth", prompt: "Something easier" } }));
+    await assertFails(answer(ALICE, { next: BOB, text: "x".repeat(501) }));
+    await assertFails(answer(ALICE, { next: BOB, text: "" }));
+    await assertFails(answer(ALICE, { next: BOB, pass: true, text: "nope" }));
+    await assertFails(answer(ALICE, { next: BOB, extra: { senderId: BOB } }));
+    await assertFails(answer(ALICE, { next: BOB, extra: { createdAt: new Date(0) } }));
+    await assertSucceeds(answer(ALICE, { next: BOB }));
+    // Bob draws and passes; then Cat; then it wraps around to Alice.
+    await assertSucceeds(updateDoc(game(BOB), { card: dare, updatedAt: serverTimestamp() }));
+    await assertSucceeds(answer(BOB, { turnNo: 1, next: CAT, pass: true, text: "" }));
+    await assertSucceeds(updateDoc(game(CAT), { card: dare, updatedAt: serverTimestamp() }));
+    await assertFails(answer(CAT, { turnNo: 2, next: BOB }));
+    await assertSucceeds(answer(CAT, { turnNo: 2, next: ALICE }));
+    const after = (await getDoc(game(ALICE))).data();
+    if (after.turn !== ALICE || after.turnNo !== 3 || after.card !== null) throw new Error(`unexpected ${JSON.stringify(after)}`);
+    // Answers are final.
+    await assertFails(updateDoc(move(ALICE, "t0"), { text: "edited" }));
+  });
+
+  test("the host can skip a quiet player; nobody else can", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [], turn: BOB, turnNo: 1, card: dare });
+    const skip = (uid, next) => updateDoc(game(uid), { turn: next, turnNo: increment(1), card: null, updatedAt: serverTimestamp() });
+    await assertFails(skip(CAT, CAT));
+    await assertFails(skip(BOB, CAT)); // Bob passes by answering, not by skipping
+    await assertFails(skip(ALICE, ALICE));
+    await assertSucceeds(skip(ALICE, CAT));
+  });
+
+  test("game chat: members only, with a touch, small and well-formed", async () => {
+    await seedGame();
+    await assertSucceeds(chat(BOB));
+    await assertSucceeds(chat(ALICE, "x".repeat(500)));
+    await assertFails(chat(BOB, ""));
+    await assertFails(chat(BOB, "x".repeat(501)));
+    await assertFails(chat(BOB, "hi", { touch: false }));
+    await assertFails(chat(BOB, "hi", { extra: { mode: "dare" } }));
+    await assertFails(chat(BOB, "hi", { extra: { senderId: ALICE } }));
+    await assertFails(chat(BOB, "hi", { extra: { createdAt: new Date(0) } }));
+    await assertFails(chat(BOB, "hi", { extra: { type: "sticker" } }));
+    await assertFails(chat(CAT)); // invited, not in
+    await assertFails(chat(EVE));
+    // A touch moves only updatedAt, and only to now.
+    await assertFails(updateDoc(game(BOB), { updatedAt: serverTimestamp(), status: "ended" }));
+    await assertFails(updateDoc(game(BOB), { updatedAt: new Date(Date.now() + HOUR) }));
+  });
+
+  test("reactions: your own, from the same five", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [] });
+    await seed((fs) => setDoc(doc(fs, `games/${GAME}/moves/t0`), {
+      senderId: ALICE, type: "answer", text: "ok", mode: "dare", prompt: "p", pass: false, turnNo: 0, createdAt: new Date(),
+    }));
+    await assertSucceeds(updateDoc(move(BOB, "t0"), { "reactions.bob": "🔥" }));
+    await assertSucceeds(updateDoc(move(CAT, "t0"), { "reactions.cat": "😂" }));
+    await assertFails(updateDoc(move(BOB, "t0"), { "reactions.cat": "👍" }));
+    await assertFails(updateDoc(move(BOB, "t0"), { "reactions.bob": "🍆" }));
+    await assertFails(updateDoc(move(BOB, "t0"), { "reactions.bob": "🔥", text: "edited" }));
+    await assertFails(updateDoc(move(EVE, "t0"), { "reactions.eve": "🔥" }));
+    await assertSucceeds(updateDoc(move(BOB, "t0"), { "reactions.bob": deleteField() }));
+  });
+
+  test("a block between two members stops both of them posting", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [] });
+    await seed((fs) => setDoc(doc(fs, "users/bob/blocks/cat"), { createdAt: new Date() }));
+    await assertFails(chat(BOB));
+    await assertFails(chat(CAT));
+    await assertSucceeds(chat(ALICE));
+  });
+
+  test("24 quiet hours end a game; then any member may clean it up", async () => {
+    await seedGame({ members: [ALICE, BOB], invited: [CAT], idleHours: 25 });
+    await seed((fs) => setDoc(doc(fs, `games/${GAME}/moves/m1`), { senderId: ALICE, type: "chat", text: "hi", createdAt: new Date() }));
+    await assertFails(chat(BOB));
+    await assertFails(updateDoc(game(ALICE), { card: dare, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(game(BOB), { updatedAt: serverTimestamp() })); // can't revive it
+    await assertFails(deleteDoc(move(EVE, "m1")));
+    await assertFails(deleteDoc(move(CAT, "m1"))); // invitees decline instead
+    await assertSucceeds(deleteDoc(move(BOB, "m1")));
+    await assertFails(deleteDoc(game(CAT)));
+    await assertSucceeds(deleteDoc(game(BOB)));
+  });
+
+  test("the host ends the game; members clean up; nobody else can", async () => {
+    await seedGame();
+    await seed((fs) => setDoc(doc(fs, `games/${GAME}/moves/m1`), { senderId: ALICE, type: "chat", text: "hi", createdAt: new Date() }));
+    await assertFails(deleteDoc(move(BOB, "m1"))); // still live, and not Bob's move
+    await assertFails(deleteDoc(game(BOB)));
+    await assertFails(updateDoc(game(BOB), { status: "ended", updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(game(ALICE), { status: "paused", updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(game(ALICE), { status: "ended", updatedAt: serverTimestamp() }));
+    await assertFails(chat(ALICE));
+    await assertSucceeds(deleteDoc(move(BOB, "m1")));
+    await assertSucceeds(deleteDoc(game(BOB)));
+  });
+
+  test("senders delete their own moves; the host deletes any, any time", async () => {
+    await seedGame({ members: [ALICE, BOB, CAT], invited: [] });
+    await seed(async (fs) => {
+      await setDoc(doc(fs, `games/${GAME}/moves/b1`), { senderId: BOB, type: "chat", text: "hi", createdAt: new Date() });
+      await setDoc(doc(fs, `games/${GAME}/moves/c1`), { senderId: CAT, type: "chat", text: "yo", createdAt: new Date() });
+    });
+    await assertFails(deleteDoc(move(CAT, "b1")));
+    await assertSucceeds(deleteDoc(move(BOB, "b1")));
+    await assertSucceeds(deleteDoc(move(ALICE, "c1")));
+    await assertSucceeds(deleteDoc(game(ALICE)));
+  });
+});

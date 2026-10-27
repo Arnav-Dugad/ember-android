@@ -170,6 +170,73 @@ is at most 60 s of mono 24 kHz AAC at about 32 kbps, roughly 240 KB.
 - The owner may update `status` to `approved` or `denied`.
 - Either side may read and delete (revoke). Revoking is instant: rules read this document on every photo read.
 
+### `games/{gameId}` (group Truth or Dare)
+The host and up to three of the host's matches take turns. A top-level collection (not under a
+match) because a game spans several matches; membership lives in the doc, so the rules read one
+document to decide everything.
+
+| field | type | notes |
+|---|---|---|
+| `host` | string | `== auth.uid` at create. Never changes |
+| `members` | string[] | who has joined, in turn order. Starts as `[host]`; an invitee who accepts is appended |
+| `invited` | string[] | who hasn't answered yet. 1 to 3 at create; only ever shrinks |
+| `profiles` | map uid -> `{name, photoUrl, blurhash}` | exactly the members and invitees. `name` is a first name (1..40). `photoUrl` (only `ember-fs://images/{id}`, never an outside URL that could log players' IPs) and `blurhash` (<= 100) are null until that person joins and writes their own first photo |
+| `status` | string | `active`, or `ended` (by the host) |
+| `turn` | string | the current player, always a member. Starts as the host |
+| `turnNo` | int | starts at 0, +1 per turn |
+| `card` | `{mode: "truth"\|"dare", prompt (1..300)}` or null | the current player's card for this turn |
+| `createdAt`, `updatedAt` | timestamp | `== request.time` when written. `updatedAt` moves on every join, card, answer and chat line |
+
+`members.size() + invited.size()` is at most 4 at create and can only shrink, so there are never
+more than four people. Nobody can be added after create.
+
+**Live** means `status == "active"` and `updatedAt + 24 h > request.time`. A game that isn't live
+accepts no joins, cards, answers, chat or reactions.
+
+- **Read** (get and list): members and invitees, while a verified adult. Queries must be
+  `array-contains` on `members` or on `invited`.
+- **Create:** the host, with `members == [host]`, `turn == host`, `turnNo == 0`, `card == null`,
+  `status == "active"`, 1 to 3 distinct invitees, and a `profiles` entry for each (the invitees'
+  with name only). For every invitee: the match `matches/{sorted uids}` exists, the match doc's
+  `isDemo` isn't `true`, and neither has blocked the other.
+- **Update:** exactly one of
+  - **Accept:** an invitee moves themselves from `invited` to the end of `members`, writes their
+    own `profiles.{self}` (with their photo) and `updatedAt`. Only while live, while still matched
+    with the host, and if neither they nor any current member has blocked the other.
+  - **Decline / leave / take out:** one person disappears from `invited` or `members`, along with
+    their `profiles` entry. If it was their turn, `turn` becomes the next member, `turnNo` + 1 and
+    `card` null; otherwise those don't change. Anyone can do it for themselves (no account doc
+    needed, so account deletion always can); the host can do it to anyone else. The host can't
+    leave, only end.
+  - **Draw:** the current player sets `card` (only when it's null) and `updatedAt`.
+  - **Next turn:** `turn` becomes the member after the current one, `turnNo` + 1, `card` null,
+    `updatedAt` now. By the current player in the same batch as their answer
+    (`moves/t{old turnNo}` must exist after the write), or by the host at any time (skip).
+  - **Touch:** a member moves only `updatedAt` (sent with each chat line).
+  - **End:** the host sets `status: "ended"` and `updatedAt`.
+- **Delete:** the host at any time; any member once the game isn't live.
+
+### `games/{gameId}/moves/{moveId}`
+| field | type | notes |
+|---|---|---|
+| `senderId` | string | `== auth.uid` |
+| `type` | string | `answer` or `chat` |
+| `text` | string | at most 500. Chat: at least 1. Answer: at least 1, or `""` when `pass` |
+| `mode`, `prompt` | string | answers only: copied from the game's `card` |
+| `pass` | bool | answers only |
+| `turnNo` | int | answers only: the game's `turnNo` |
+| `reactions` | map uid -> emoji, optional | never written on create |
+| `createdAt` | timestamp | `== request.time` |
+
+- **Read:** members only. Invitees see nothing here until they accept.
+- **Create:** members of a live game, when neither they nor any other member has blocked the
+  other. An **answer** has id `t{turnNo}` (so one per turn), comes from the current player, needs a
+  drawn card, and must be written with the next-turn update. A **chat** line must be written
+  with a touch of the game's `updatedAt`.
+- **Update:** reactions only, as in 1:1 chat (own key, one of the five), while live and with no
+  blocks between members.
+- **Delete:** the sender (always), the host (always), any member once the game isn't live.
+
 ### `reports/{reportId}`
 `{ reporterId == auth.uid, targetId, reason (enum), details (<= 1000), matchId or null, createdAt == request.time, status == "open" }`.
 Create only. Nobody can read, update or delete.
@@ -225,13 +292,32 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
 - **Unmatch:** delete the messages, chat images, voice notes, typing docs and match doc, plus
   album access both ways. The app hides the conversation at once and waits 10 s (an Undo
   window) before deleting anything; if the app is killed in that window, nothing is deleted.
-- **Block:** write the block doc and `users/{them}/hiddenBy/{me}` in one batch, then unmatch.
+  Group games built on the match go too: I leave (or decline) games they host, and take them
+  out of games I host.
+- **Block:** write the block doc and `users/{them}/hiddenBy/{me}` in one batch, then leave every
+  group game we share (or, as host, take them out), then unmatch.
 - **Report:** read today's counter (`users/{me}/limits/{UTC date}`, from the server), then in one
   batch set it to `n + 1` and create `reports/{me}_{date}_{n + 1}`. At 20 the app says so instead
   of writing (blocking still works). A lost race (two reports at once) retries once.
 - **Delete account:** client-side deletes of everything the user owns or created (see
   `FirebaseSafetyRepository`), including `voices/{uid}` and the `hiddenBy` entries it wrote (the
   targets come from its own `blocks`), then `FirebaseUser.delete()`. Reports and report counters are kept.
+  Group games go first: games the user hosts are ended and deleted with all their moves; in
+  other games the user's own moves are deleted and they leave (their name and photo leave with
+  them); pending invites are declined.
+- **Group Truth or Dare:**
+  - **Invite:** the picker lists my matches minus demo profiles and anyone in my `blocks` or
+    `hiddenBy`. The host writes the game; nothing else happens until an invitee accepts.
+  - **Invites** show in Matches as "Arjun invited you to Truth or Dare with 2 others" with the
+    others' first names. Invites that include someone I blocked, or who blocked me, are hidden and
+    declined automatically.
+  - **Play:** the current player draws a card (the same non-explicit deck as the 1:1 game,
+    avoiding prompts this game already had), then answers or passes. The answer and the next turn
+    are one transaction. Anyone can leave; the host can skip a quiet player, take someone out, or
+    end the game.
+  - **Expiry and cleanup:** games not live (ended, or 24 h without a write) are hidden. Opening
+    Matches or the game deletes them: any member deletes the moves, then the game doc. Invitees
+    of a dead game decline.
 
 ## AI chat (device only)
 

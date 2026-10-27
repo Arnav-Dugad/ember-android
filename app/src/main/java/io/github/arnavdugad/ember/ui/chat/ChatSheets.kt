@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.Icon
@@ -79,6 +80,7 @@ import io.github.arnavdugad.ember.data.model.GameMode
 import io.github.arnavdugad.ember.data.model.Message
 import io.github.arnavdugad.ember.data.model.Reactions
 import io.github.arnavdugad.ember.ui.album.SecureWindow
+import io.github.arnavdugad.ember.ui.game.LocalGroupGameLauncher
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -131,6 +133,19 @@ internal fun TruthOrDareSheet(visible: Boolean, draw: (GameMode) -> GameCard, on
                     }
                 }
             }
+        }
+        // Group Truth or Dare, with this match already picked (provided by the nav host).
+        LocalGroupGameLauncher.current?.let { openGroupGame ->
+            Spacer(Modifier.height(12.dp))
+            GlassButton(
+                "Play with more people",
+                onClick = {
+                    onDismiss()
+                    openGroupGame()
+                },
+                icon = Icons.Rounded.Groups,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

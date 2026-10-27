@@ -643,5 +643,285 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time
         && request.resource.data.status == 'open';
     }
+
+    // =====================================================================================
+    // ---------- group Truth or Dare ----------
+    //
+    // games/{gameId}: the host and up to three of the host's matches take turns at Truth or
+    // Dare. Invitees see only an invite (first names) until they accept; members read the moves.
+    // Anyone may leave or decline at any time, the host may take someone out or end the game,
+    // and a game nobody has touched for 24 hours is over (any member may then delete it).
+    // Block checks: host <-> invitee at create, joiner <-> every member at accept, sender <->
+    // every member on each move. Contract: docs/DATA_MODEL.md, "Group Truth or Dare".
+    // =====================================================================================
+
+    function maxGamePlayers() {
+      return 4;
+    }
+
+    // Live: not ended, and touched (created, joined, a card, an answer, a chat) in the last 24 h.
+    function isLiveGame(g) {
+      return g.status == 'active' && g.updatedAt + duration.value(24, 'h') > request.time;
+    }
+
+    // Who plays after `uid`, in member order. Members never exceed four.
+    function nextAfter(list, uid) {
+      return list.size() == 1 ? list[0]
+        : (list[0] == uid ? list[1]
+        : ((list.size() > 2 && list[1] == uid) ? list[2]
+        : ((list.size() > 3 && list[2] == uid) ? list[3]
+        : list[0])));
+    }
+
+    // What players show each other: a first name, plus a first photo once they've joined. The
+    // photo must be one of Ember's own image docs, so no player can make the others' phones load
+    // an outside URL (which would hand that server their IP addresses).
+    function validPlayer(p, withPhoto) {
+      return p is map
+        && p.keys().hasOnly(['name', 'photoUrl', 'blurhash'])
+        && p.name is string && p.name.size() >= 1 && p.name.size() <= 40
+        && (p.get('photoUrl', null) == null
+            || (withPhoto && p.photoUrl is string && p.photoUrl.matches('ember-fs://images/[A-Za-z0-9_-]{1,128}')))
+        && (p.get('blurhash', null) == null || (withPhoto && p.blurhash is string && p.blurhash.size() <= 100));
+    }
+
+    // At create: the host's card (with photo) and a name-only card per invitee, nothing else.
+    function validNewPlayers(p, invited) {
+      return p is map
+        && p.keys().size() == invited.size() + 1
+        && p.keys().hasOnly(invited.concat([me()]))
+        && validPlayer(p[me()], true)
+        && validPlayer(p[invited[0]], false)
+        && (invited.size() < 2 || validPlayer(p[invited[1]], false))
+        && (invited.size() < 3 || validPlayer(p[invited[2]], false));
+    }
+
+    // The host may invite a match (not a demo, per the match doc) when neither blocked the other.
+    // Three document reads per invitee: with the account check that is exactly the limit of 10.
+    function canInvite(uid) {
+      return uid is string && uid != me()
+        && get(matchPath(me(), uid)).data.get('isDemo', false) != true
+        && !blocked(me(), uid);
+    }
+
+    // Neither the caller nor anyone in `uids` (at most four, the caller skipped) blocked the other.
+    function clearOfBlocks(uids) {
+      return (uids.size() < 1 || uids[0] == me() || !blocked(me(), uids[0]))
+        && (uids.size() < 2 || uids[1] == me() || !blocked(me(), uids[1]))
+        && (uids.size() < 3 || uids[2] == me() || !blocked(me(), uids[2]))
+        && (uids.size() < 4 || uids[3] == me() || !blocked(me(), uids[3]));
+    }
+
+    function validGameCard(c) {
+      return c is map
+        && c.keys().hasOnly(['mode', 'prompt'])
+        && c.mode in ['truth', 'dare']
+        && c.prompt is string && c.prompt.size() >= 1 && c.prompt.size() <= 300;
+    }
+
+    match /games/{gameId} {
+      function movePath(id) {
+        return /databases/$(database)/documents/games/$(gameId)/moves/$(id);
+      }
+
+      // The one person a write takes out of the game (members or invited), or '' if not exactly one.
+      function removedPlayer() {
+        let gone = resource.data.members.concat(resource.data.invited)
+          .removeAll(request.resource.data.members.concat(request.resource.data.invited));
+        return gone.size() == 1 ? gone[0] : '';
+      }
+
+      // The update branches below take `keys` (the changed top-level fields), computed once per
+      // request because map diffs weigh heavily against the 1000-expression budget. Each branch
+      // starts with its cheapest distinguishing check.
+
+      // Leaving, declining, or being taken out by the host. Their card goes with them, and if it
+      // was their turn the next member's begins. The host can't leave, only end the game.
+      function removes(uid, keys) {
+        let before = resource.data;
+        let after = request.resource.data;
+        return uid != '' && uid != before.host
+          && !(uid in after.profiles)
+          && after.profiles.diff(before.profiles).affectedKeys().hasOnly([uid])
+          && ((uid in before.invited
+                && keys.hasOnly(['invited', 'profiles'])
+                && after.invited == before.invited.removeAll([uid]))
+            || (uid in before.members
+                && keys.hasOnly(['members', 'profiles', 'turn', 'turnNo', 'card'])
+                && after.members == before.members.removeAll([uid])
+                && (before.turn == uid
+                      ? (after.turn == nextAfter(before.members, uid)
+                          && after.turnNo == before.turnNo + 1
+                          && after.get('card', null) == null)
+                      : (after.turn == before.turn
+                          && after.turnNo == before.turnNo
+                          && after.get('card', null) == before.get('card', null)))));
+      }
+
+      // An invitee joins: moves from `invited` to the end of `members`, adds their own photo, and
+      // only if they're still matched with the host and nobody already in has a block with them.
+      function accepts(keys) {
+        let before = resource.data;
+        let after = request.resource.data;
+        return me() in before.invited
+          && keys.hasOnly(['invited', 'members', 'profiles', 'updatedAt'])
+          && after.members == before.members.concat([me()])
+          && after.invited == before.invited.removeAll([me()])
+          && after.updatedAt == request.time
+          && isLiveGame(before)
+          && after.profiles.diff(before.profiles).affectedKeys().hasOnly([me()])
+          && validPlayer(after.profiles[me()], true)
+          && isMatched(before.host)
+          && clearOfBlocks(before.members);
+      }
+
+      // The current player draws a card (once per turn) and everyone sees it flip.
+      function picksCard(keys) {
+        let before = resource.data;
+        return keys.hasOnly(['card', 'updatedAt'])
+          && me() == before.turn
+          && before.get('card', null) == null
+          && validGameCard(request.resource.data.card)
+          && request.resource.data.updatedAt == request.time
+          && isLiveGame(before);
+      }
+
+      // The turn passes in member order: by the current player, in the same batch as their answer
+      // (moves/t{turnNo}), or by the host skipping someone who's gone quiet.
+      function advancesTurn(keys) {
+        let before = resource.data;
+        let after = request.resource.data;
+        return keys.hasOnly(['turn', 'turnNo', 'card', 'updatedAt'])
+          && after.turnNo == before.turnNo + 1
+          && after.turn == nextAfter(before.members, before.turn)
+          && after.get('card', null) == null
+          && after.updatedAt == request.time
+          && me() in before.members
+          && isLiveGame(before)
+          && ((me() == before.turn && existsAfter(movePath('t' + string(before.turnNo))))
+              || me() == before.host);
+      }
+
+      // A chat line keeps the game alive.
+      function touches(keys) {
+        return keys.hasOnly(['updatedAt'])
+          && request.resource.data.updatedAt == request.time
+          && me() in resource.data.members
+          && isLiveGame(resource.data);
+      }
+
+      function ends(keys) {
+        return keys.hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status == 'ended'
+          && request.resource.data.updatedAt == request.time
+          && resource.data.status == 'active'
+          && me() == resource.data.host;
+      }
+
+      // `gone` is removedPlayer(): a removal, or else exactly one of the other kinds of update.
+      function allowsUpdate(keys, gone) {
+        return (gone == me() && removes(me(), keys))
+          || (gone != '' && me() == resource.data.host && removes(gone, keys))
+          || (gone == '' && (ends(keys)
+                || (isAdult() && (touches(keys) || picksCard(keys) || advancesTurn(keys) || accepts(keys)))));
+      }
+
+      // Members and invitees. Queries must ask for array-contains on members or invited.
+      allow get, list: if isAdult() && (me() in resource.data.members || me() in resource.data.invited);
+
+      allow create: if isAdult()
+        && request.resource.data.keys().hasOnly([
+             'host', 'members', 'invited', 'profiles', 'status', 'turn', 'turnNo', 'card', 'createdAt', 'updatedAt'
+           ])
+        && request.resource.data.host == me()
+        && request.resource.data.members == [me()]
+        && request.resource.data.invited is list
+        && request.resource.data.invited.size() >= 1
+        && request.resource.data.invited.size() <= maxGamePlayers() - 1
+        && request.resource.data.invited.toSet().size() == request.resource.data.invited.size()
+        && validNewPlayers(request.resource.data.profiles, request.resource.data.invited)
+        && request.resource.data.status == 'active'
+        && request.resource.data.turn == me()
+        && request.resource.data.turnNo == 0
+        && request.resource.data.get('card', null) == null
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && canInvite(request.resource.data.invited[0])
+        && (request.resource.data.invited.size() < 2 || canInvite(request.resource.data.invited[1]))
+        && (request.resource.data.invited.size() < 3 || canInvite(request.resource.data.invited[2]));
+
+      // Leaving and declining need no account doc, so account deletion can always do them.
+      allow update: if isSignedIn() && allowsUpdate(changed(), removedPlayer());
+
+      // The host at any time; any member once it has ended or expired. Clients delete the moves
+      // first: rules can't see whether a subcollection is empty.
+      allow delete: if isSignedIn()
+        && (me() == resource.data.host || (me() in resource.data.members && !isLiveGame(resource.data)));
+
+      // answer: the current player's turn, id t{turnNo}, written with the turn advance.
+      // chat:   any member, written with a touch of the game's updatedAt.
+      match /moves/{moveId} {
+        function game() {
+          return get(/databases/$(database)/documents/games/$(gameId)).data;
+        }
+
+        function gameAfter() {
+          return getAfter(/databases/$(database)/documents/games/$(gameId)).data;
+        }
+
+        function isMember() {
+          return isAdult() && me() in game().members;
+        }
+
+        function isAnswer(d) {
+          return d.type == 'answer'
+            && me() == game().turn
+            && moveId == 't' + string(game().turnNo)
+            && d.turnNo == game().turnNo
+            && game().get('card', null) != null
+            && d.mode == game().card.mode
+            && d.prompt == game().card.prompt
+            && d.pass is bool
+            && (d.pass ? d.text == '' : d.text.size() >= 1)
+            && gameAfter().turnNo == game().turnNo + 1;
+        }
+
+        function isChat(d) {
+          return d.type == 'chat'
+            && d.keys().hasOnly(['senderId', 'type', 'text', 'createdAt'])
+            && d.text.size() >= 1
+            && gameAfter().updatedAt == request.time;
+        }
+
+        allow read: if isMember();
+
+        allow create: if isMember()
+          && isLiveGame(game())
+          && request.resource.data.keys().hasOnly(['senderId', 'type', 'text', 'mode', 'prompt', 'pass', 'turnNo', 'createdAt'])
+          && request.resource.data.senderId == me()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 500
+          && (isChat(request.resource.data) || isAnswer(request.resource.data))
+          && clearOfBlocks(game().members);
+
+        // A member sets or removes only their own reaction, from the same five as the 1:1 chat.
+        allow update: if isMember()
+          && isLiveGame(game())
+          && changed().hasOnly(['reactions'])
+          && request.resource.data.reactions is map
+          && request.resource.data.reactions.diff(resource.data.get('reactions', {})).affectedKeys().hasOnly([me()])
+          && (!(me() in request.resource.data.reactions)
+              || request.resource.data.reactions[me()] in reactionEmojis())
+          && clearOfBlocks(game().members);
+
+        // Your own moves always (account deletion); everything for the host, or for any member
+        // once the game is over.
+        allow delete: if isSignedIn()
+          && (resource.data.senderId == me()
+              || me() == game().host
+              || (me() in game().members && !isLiveGame(game())));
+      }
+    }
   }
 }

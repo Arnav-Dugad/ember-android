@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.HeartBroken
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material3.Icon
@@ -71,6 +72,7 @@ import io.github.arnavdugad.ember.core.designsystem.EmberFlame
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
+import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.PillShape
@@ -131,8 +133,14 @@ class MatchesViewModel @Inject constructor(
     }
 }
 
+/** [groupGames] is the group Truth or Dare invites and games, shown under the title. */
 @Composable
-fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
+fun MatchesScreen(
+    viewModel: MatchesViewModel,
+    onOpenChat: (String) -> Unit,
+    onNewGroupGame: (() -> Unit)? = null,
+    groupGames: @Composable () -> Unit = {},
+) {
     val matches by viewModel.matches.collectAsStateWithLifecycle()
     val archivedIds by viewModel.archived.collectAsStateWithLifecycle()
     var archiveOpen by rememberSaveable { mutableStateOf(false) }
@@ -148,7 +156,13 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = BottomBarSpace + 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { ScreenTitle("Matches", subtitle = "Say something bold. They already like you.") }
+            item {
+                Row(verticalAlignment = Alignment.Top) {
+                    ScreenTitle("Matches", Modifier.weight(1f), subtitle = "Say something bold. They already like you.")
+                    onNewGroupGame?.let { GlassIconButton(Icons.Rounded.Groups, contentDescription = "Group game", onClick = it) }
+                }
+            }
+            item(key = "groupGames") { groupGames() }
             when {
                 matches == null -> items(4) { Box(Modifier.fillMaxWidth().height(76.dp).shimmer(EmberShapes.tile)) }
                 all.isEmpty() -> item { EmptyMatches() }
