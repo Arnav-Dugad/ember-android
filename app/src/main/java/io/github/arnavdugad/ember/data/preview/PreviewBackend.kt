@@ -11,6 +11,7 @@ import io.github.arnavdugad.ember.data.model.Ages
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
 import io.github.arnavdugad.ember.data.model.AuthUser
+import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.LastMessage
@@ -21,8 +22,11 @@ import io.github.arnavdugad.ember.data.model.MessageType
 import io.github.arnavdugad.ember.data.model.Photo
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ProfileDraft
+import io.github.arnavdugad.ember.data.model.Reactions
+import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.ReportReason
 import io.github.arnavdugad.ember.data.model.SwipeDirection
+import io.github.arnavdugad.ember.data.model.VoiceClip
 import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
@@ -31,12 +35,15 @@ import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import io.github.arnavdugad.ember.data.repo.UnderageException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -47,7 +54,7 @@ import javax.inject.Singleton
  * The whole backend, in memory, for builds without a Firebase project. It lets anyone install a
  * release APK and feel the app (onboarding, the deck, matches, chat, albums) before setting up
  * Firebase. Demo people can match with you but never message you: no code path here writes a
- * message from anyone but the local user.
+ * message (or a reaction) from anyone but the local user.
  */
 @Singleton
 class PreviewBackend @Inject constructor(@ApplicationContext private val context: Context) :
@@ -234,8 +241,11 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     // --- Matches and chat ---
 
-    override fun observeMatches(): Flow<List<Match>> =
-        matches.map { all -> all.values.sortedByDescending { it.lastMessage?.sentAt ?: it.createdAt } }
+    override fun observeMatches(): Flow<List<Match>> = matches.map { it.newestFirst() }
+
+    override suspend fun fetchMatches(): List<Match> = matches.value.newestFirst()
+
+    private fun Map<String, Match>.newestFirst() = values.sortedByDescending { it.lastMessage?.sentAt ?: it.createdAt }
 
     override fun observeMatch(matchId: String): Flow<Match?> = matches.map { it[matchId] }
 
@@ -245,22 +255,63 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     override suspend fun setTyping(matchId: String, typing: Boolean) = Unit
 
-    override suspend fun sendText(matchId: String, text: String) = append(matchId, Message(newId(), ME, MessageType.Text, text.trim(), createdAt = Instant.now()))
+    override suspend fun sendText(matchId: String, text: String, replyTo: ReplyRef?) =
+        append(matchId, Message(newId(), ME, MessageType.Text, text.trim(), createdAt = Instant.now(), replyTo = replyTo))
 
-    override suspend fun sendImage(matchId: String, uri: Uri, caption: String) =
-        append(matchId, Message(newId(), ME, MessageType.Image, caption.trim(), imageUrl = uri.toString(), createdAt = Instant.now()))
+    override suspend fun sendImage(matchId: String, uri: Uri, caption: String, viewOnce: Boolean, replyTo: ReplyRef?) = append(
+        matchId,
+        Message(newId(), ME, MessageType.Image, caption.trim(), imageUrl = uri.toString(), createdAt = Instant.now(), viewOnce = viewOnce, replyTo = replyTo),
+    )
 
     override suspend fun sendGame(matchId: String, card: GameCard) =
         append(matchId, Message(newId(), ME, MessageType.Game, card.prompt, game = card, createdAt = Instant.now()))
 
+    /** The recording is kept as a local file; nothing leaves the device in Preview mode. */
+    override suspend fun sendVoice(matchId: String, clip: VoiceClip, replyTo: ReplyRef?) {
+        val id = newId()
+        withContext(Dispatchers.IO) {
+            val target = voiceFileFor(id)
+            target.parentFile?.mkdirs()
+            if (!clip.file.renameTo(target)) {
+                clip.file.copyTo(target, overwrite = true)
+                clip.file.delete()
+            }
+        }
+        append(matchId, Message(id, ME, MessageType.Voice, "", createdAt = Instant.now(), audioId = id, durationMs = clip.durationMs, replyTo = replyTo))
+    }
+
+    override suspend fun sendDate(matchId: String, idea: DateIdea) =
+        append(matchId, Message(newId(), ME, MessageType.Date, idea.title, createdAt = Instant.now(), date = idea))
+
+    override suspend fun react(matchId: String, messageId: String, emoji: String?) {
+        require(emoji == null || emoji in Reactions.all) { "That reaction isn't available." }
+        updateMessage(matchId, messageId) { m -> m.copy(reactions = if (emoji == null) m.reactions - ME else m.reactions + (ME to emoji)) }
+    }
+
+    override suspend fun markViewOnceOpened(matchId: String, message: Message) =
+        updateMessage(matchId, message.id) { it.copy(viewedAt = it.viewedAt ?: Instant.now()) }
+
+    override suspend fun voiceFile(matchId: String, message: Message): File {
+        val file = voiceFileFor(message.audioId ?: error("Not a voice note."))
+        check(file.exists()) { "This voice note isn't available anymore." }
+        return file
+    }
+
     override suspend fun markRead(matchId: String) = Unit
+
+    private fun voiceFileFor(id: String) = File(context.filesDir, "preview/voice/$id.m4a")
 
     private fun append(matchId: String, message: Message) {
         messages.update { it + (matchId to (listOf(message) + it[matchId].orEmpty())) }
         matches.update { all ->
             val match = all[matchId] ?: return@update all
-            all + (matchId to match.copy(lastMessage = LastMessage(message.text.ifBlank { "Photo" }, ME, message.type, message.createdAt)))
+            all + (matchId to match.copy(lastMessage = LastMessage(message.summary, ME, message.type, message.createdAt)))
         }
+    }
+
+    private fun updateMessage(matchId: String, messageId: String, change: (Message) -> Message) = messages.update { all ->
+        val thread = all[matchId] ?: return@update all
+        all + (matchId to thread.map { if (it.id == messageId) change(it) else it })
     }
 
     // --- Albums ---

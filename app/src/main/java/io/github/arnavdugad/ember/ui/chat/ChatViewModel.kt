@@ -8,13 +8,20 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.arnavdugad.ember.data.model.Catalog
+import io.github.arnavdugad.ember.data.model.DateIdea
+import io.github.arnavdugad.ember.data.model.DatePlanner
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.GameMode
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Message
+import io.github.arnavdugad.ember.data.model.Profile
+import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.ReportReason
+import io.github.arnavdugad.ember.data.model.VoiceClip
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
+import io.github.arnavdugad.ember.ui.matches.UnmatchQueue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,14 +37,15 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import javax.inject.Inject
+import java.io.File
 
 data class ChatUiState(
-    val sending: Boolean = false,
     val uploading: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
     val removed: Boolean = false,
+    /** The message the next send replies to. */
+    val replyTo: ReplyRef? = null,
 )
 
 @HiltViewModel(assistedFactory = ChatViewModel.Factory::class)
@@ -45,6 +53,8 @@ class ChatViewModel @AssistedInject constructor(
     @Assisted private val matchId: String,
     private val repo: MatchRepository,
     private val safety: SafetyRepository,
+    private val unmatches: UnmatchQueue,
+    profiles: ProfileRepository,
 ) : ViewModel() {
     @AssistedFactory
     interface Factory {
@@ -62,11 +72,20 @@ class ChatViewModel @AssistedInject constructor(
         .catch { emit(false) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    // Both profiles feed the date planner; neither is needed for anything else here.
+    private val myProfile: StateFlow<Profile?> = profiles.observeMyProfile().catch { emit(null) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val theirProfile: StateFlow<Profile?> = match.filterNotNull().map { it.otherUid }.distinctUntilChanged()
+        .map { uid -> runCatching { profiles.getProfile(uid) }.getOrNull() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui.asStateFlow()
 
     private var typingJob: Job? = null
     private var typingSent = false
+    private val openedViewOnce = mutableSetOf<String>()
 
     init {
         // Read receipts: mark read whenever new messages arrive while the chat is open.
@@ -100,17 +119,67 @@ class ChatViewModel @AssistedInject constructor(
         }
     }
 
+    fun replyTo(message: Message) = _ui.update { it.copy(replyTo = ReplyRef.of(message)) }
+
+    fun cancelReply() = _ui.update { it.copy(replyTo = null) }
+
+    /** Takes the pending reply, so it's attached to exactly one message. */
+    private fun consumeReply(): ReplyRef? = _ui.value.replyTo.also { if (it != null) cancelReply() }
+
     fun send(text: String) {
         if (text.isBlank()) return
         stopTyping()
-        launch(sending = true) { repo.sendText(matchId, text.take(2000)) }
+        val reply = consumeReply()
+        launch { repo.sendText(matchId, text.take(2000), reply) }
     }
 
-    fun sendImage(uri: Uri) = launch(uploading = true) { repo.sendImage(matchId, uri, "") }
+    /** Sends one of the date card's quick replies as an ordinary text message. */
+    fun quickReply(text: String) = launch { repo.sendText(matchId, text) }
+
+    fun sendImage(uri: Uri, viewOnce: Boolean) {
+        val reply = consumeReply()
+        launch(uploading = true) { repo.sendImage(matchId, uri, "", viewOnce, reply) }
+    }
+
+    fun sendVoice(clip: VoiceClip) {
+        val reply = consumeReply()
+        launch(uploading = true) {
+            // A sent clip has already been moved into the voice cache; a failed one is dropped.
+            try {
+                repo.sendVoice(matchId, clip, reply)
+            } finally {
+                clip.file.delete()
+            }
+        }
+    }
 
     fun drawCard(mode: GameMode): GameCard = GameCard(mode, (if (mode == GameMode.Truth) Catalog.truths else Catalog.dares).random())
 
-    fun sendCard(card: GameCard) = launch(sending = true) { repo.sendGame(matchId, card) }
+    fun sendCard(card: GameCard) = launch { repo.sendGame(matchId, card) }
+
+    /** Fresh date ideas from both people's interests and the city. */
+    fun suggestDates(): List<DateIdea> {
+        val me = myProfile.value
+        val them = theirProfile.value
+        val city = me?.city?.ifBlank { null } ?: them?.city.orEmpty()
+        return DatePlanner.suggest(me?.interests.orEmpty(), them?.interests.orEmpty(), city)
+    }
+
+    fun sendDate(idea: DateIdea) = launch { repo.sendDate(matchId, idea) }
+
+    /** Tapping the reaction you already gave takes it back. */
+    fun react(message: Message, emoji: String) {
+        val mine = match.value?.myUid?.let { message.reactions[it] }
+        launch { repo.react(matchId, message.id, if (mine == emoji) null else emoji) }
+    }
+
+    /** Called once the recipient closes a view-once photo. Idempotent. */
+    fun viewOnceClosed(message: Message) {
+        if (!openedViewOnce.add(message.id)) return
+        launch { repo.markViewOnceOpened(matchId, message) }
+    }
+
+    suspend fun voiceFile(message: Message): File = repo.voiceFile(matchId, message)
 
     fun report(reason: ReportReason, details: String, block: Boolean) {
         val other = match.value?.otherUid ?: return
@@ -122,21 +191,26 @@ class ChatViewModel @AssistedInject constructor(
         launch(busy = true, closeAfter = true) { safety.block(other) }
     }
 
-    fun unmatch() = launch(busy = true, closeAfter = true) { safety.unmatch(matchId) }
+    /** Hides the conversation now; the real unmatch waits out the Undo window. */
+    fun unmatch() {
+        unmatches.unmatch(matchId, match.value?.otherName ?: "your match")
+        _ui.update { it.copy(removed = true) }
+    }
+
+    fun showError(message: String) = _ui.update { it.copy(error = message) }
 
     fun clearError() = _ui.update { it.copy(error = null) }
 
-    private fun launch(sending: Boolean = false, uploading: Boolean = false, busy: Boolean = false, closeAfter: Boolean = false, block: suspend () -> Unit) {
+    private fun launch(uploading: Boolean = false, busy: Boolean = false, closeAfter: Boolean = false, block: suspend () -> Unit) {
         viewModelScope.launch {
-            _ui.update { it.copy(sending = sending || it.sending, uploading = uploading || it.uploading, busy = busy || it.busy) }
+            _ui.update { it.copy(uploading = uploading || it.uploading, busy = busy || it.busy) }
             val result = runCatching { block() }
             _ui.update {
                 it.copy(
-                    sending = false,
-                    uploading = false,
-                    busy = false,
-                    removed = closeAfter && result.isSuccess,
-                    error = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't send. Try again." },
+                    uploading = if (uploading) false else it.uploading,
+                    busy = if (busy) false else it.busy,
+                    removed = it.removed || (closeAfter && result.isSuccess),
+                    error = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't send. Try again." } ?: it.error,
                 )
             }
         }

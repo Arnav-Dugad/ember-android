@@ -39,8 +39,9 @@ internal fun DocumentReference.snapshots(
     awaitClose { registration.remove() }
 }
 
-internal fun Query.snapshots(): Flow<QuerySnapshot?> = callbackFlow {
-    val registration = addSnapshotListener { snapshot, error ->
+internal fun Query.snapshots(includeMetadata: Boolean = false): Flow<QuerySnapshot?> = callbackFlow {
+    val changes = if (includeMetadata) MetadataChanges.INCLUDE else MetadataChanges.EXCLUDE
+    val registration = addSnapshotListener(changes) { snapshot, error ->
         if (error != null) {
             if (error.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) trySend(null) else close(error)
             return@addSnapshotListener

@@ -1,6 +1,7 @@
 package io.github.arnavdugad.ember.data.model
 
 import androidx.compose.runtime.Immutable
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 
@@ -134,12 +135,17 @@ data class Match(
             val sent = last.sentAt ?: return false
             return myLastRead == null || sent.isAfter(myLastRead)
         }
+
+    /** The signed-in user's uid: a match id is the two uids, sorted, joined by `_`. */
+    val myUid: String get() = id.split('_').firstOrNull { it != otherUid }.orEmpty()
 }
 
 enum class MessageType(val key: String) {
     Text("text"),
     Image("image"),
     Game("game"),
+    Voice("voice"),
+    Date("date"),
     ;
 
     companion object {
@@ -160,6 +166,33 @@ enum class GameMode(val key: String, val label: String) {
 @Immutable
 data class GameCard(val mode: GameMode, val prompt: String)
 
+/** A date idea from the planner, sent as a card. */
+@Immutable
+data class DateIdea(val title: String, val detail: String, val emoji: String)
+
+/** The quoted message a reply points at. [text] is a short excerpt. */
+@Immutable
+data class ReplyRef(val id: String, val senderId: String, val text: String, val type: MessageType) {
+    companion object {
+        /** The rules cap the excerpt at 120 chars. */
+        const val MAX_TEXT = 120
+
+        fun of(message: Message): ReplyRef {
+            // Never cut an emoji (a surrogate pair) in half.
+            val excerpt = message.summary.take(MAX_TEXT).let { if (it.lastOrNull()?.isHighSurrogate() == true) it.dropLast(1) else it }
+            return ReplyRef(message.id, message.senderId, excerpt, message.type)
+        }
+    }
+}
+
+/** A finished recording, ready to send. */
+class VoiceClip(val file: File, val durationMs: Long)
+
+/** The reactions a message can carry. The security rules hold the same list. */
+object Reactions {
+    val all = listOf("🔥", "❤️", "😂", "😮", "👍")
+}
+
 @Immutable
 data class Message(
     val id: String,
@@ -172,7 +205,25 @@ data class Message(
     val game: GameCard? = null,
     val createdAt: Instant?,
     val pending: Boolean = false,
-)
+    /** uid -> one of [Reactions.all]. */
+    val reactions: Map<String, String> = emptyMap(),
+    val replyTo: ReplyRef? = null,
+    val viewOnce: Boolean = false,
+    val viewedAt: Instant? = null,
+    val audioId: String? = null,
+    val durationMs: Long = 0,
+    val date: DateIdea? = null,
+) {
+    /** One line describing the message, for quotes, previews and notifications. */
+    val summary: String
+        get() = when (type) {
+            MessageType.Text -> text
+            MessageType.Image -> if (viewOnce) "View-once photo" else text.ifBlank { "Photo" }
+            MessageType.Game -> game?.prompt ?: text
+            MessageType.Voice -> "Voice note"
+            MessageType.Date -> date?.title ?: text
+        }
+}
 
 enum class AccessStatus(val key: String) {
     None("none"),
