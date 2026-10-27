@@ -10,9 +10,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Records the start-up path and the swipe deck, the two places where a dropped frame is most
- * noticeable. The app opens in Preview mode when no Firebase project is configured, so the deck
- * is reachable without signing in.
+ * Records cold start through the welcome screen into the age gate (the app opens in Preview mode
+ * when no Firebase project is configured, so no sign-in is needed). The deck sits behind
+ * onboarding, so the swipe part only runs when the device already has a finished Preview profile
+ * in the same process; otherwise it is skipped and the profile covers start-up.
  */
 @RunWith(AndroidJUnit4::class)
 class BaselineProfileGenerator {

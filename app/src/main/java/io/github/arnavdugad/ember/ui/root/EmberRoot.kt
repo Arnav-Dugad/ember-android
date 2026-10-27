@@ -27,6 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -89,7 +91,8 @@ fun EmberRoot(viewModel: RootViewModel = hiltViewModel()) {
 
     EmberTheme(palette) {
         GlassScene(
-            modifier = Modifier.fillMaxSize(),
+            // Exposes test tags to UiAutomator for the Baseline Profile generator.
+            modifier = Modifier.fillMaxSize().semantics { testTagsAsResourceId = true },
             backdrop = {
                 AnimatedContent(
                     targetState = state.session,
