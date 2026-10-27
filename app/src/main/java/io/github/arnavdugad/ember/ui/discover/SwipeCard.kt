@@ -3,6 +3,8 @@ package io.github.arnavdugad.ember.ui.discover
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
@@ -44,6 +46,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -79,6 +82,7 @@ import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.main.sharedPhoto
+import io.github.arnavdugad.ember.ui.profile.VoicePill
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
@@ -90,6 +94,9 @@ class CardSwipeState {
     var width by mutableFloatStateOf(1f)
     var height by mutableFloatStateOf(1f)
     var grabbedTop by mutableStateOf(true)
+
+    /** A finger is on the card (the gyroscope tilt steps aside). */
+    var dragging by mutableStateOf(false)
 
     /** -1 (full nope) .. 1 (full like). */
     val horizontal: Float get() = (offset.value.x / (width * COMMIT_FRACTION)).coerceIn(-1f, 1f)
@@ -136,6 +143,21 @@ class CardSwipeState {
         offset.animateTo(Offset.Zero, spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessMediumLow))
     }
 
+    /** A tiny "no" shake before a nope from the button. */
+    suspend fun shake() {
+        val a = width * 0.022f
+        offset.animateTo(
+            Offset.Zero,
+            keyframes {
+                durationMillis = 200
+                Offset(-a, 0f) at 35
+                Offset(a, 0f) at 90
+                Offset(-a * 0.6f, 0f) at 140
+                Offset(a * 0.3f, 0f) at 175
+            },
+        )
+    }
+
     companion object {
         const val COMMIT_FRACTION = 0.32f
         const val SUPER_FRACTION = 0.22f
@@ -153,6 +175,7 @@ class DeckController {
     suspend fun swipe(direction: SwipeDirection) {
         val state = top ?: return
         if (state.offset.isRunning) return
+        if (direction == SwipeDirection.Nope) state.shake()
         state.flingAway(direction)
         onCommit?.invoke(direction)
     }
@@ -161,6 +184,10 @@ class DeckController {
 /**
  * The deck: up to three cards, the ones behind scaling and rising toward the front as the top
  * card leaves. Only the top card takes gestures.
+ *
+ * Each time [dealKey] changes (a fresh deck), the top three are dealt in from below one by one,
+ * the bottom card first, each on a spring with a little spin. [onDragCommit] fires the moment a
+ * drag decides a direction, before the card flies.
  */
 @Composable
 fun SwipeDeck(
@@ -169,8 +196,24 @@ fun SwipeDeck(
     onSwiped: (Profile, SwipeDirection) -> Unit,
     onOpen: (Profile, Int) -> Unit,
     modifier: Modifier = Modifier,
+    dealKey: Int = 0,
+    onDragCommit: (SwipeDirection) -> Unit = {},
 ) {
     val visible = profiles.take(3)
+    // Saved with the screen, so coming back from a profile doesn't deal the same deck again.
+    var dealt by rememberSaveable { mutableIntStateOf(Int.MIN_VALUE) }
+    val deal = remember(dealKey) { if (dealKey != dealt) visible.associate { it.uid to Animatable(1f) } else emptyMap() }
+    LaunchedEffect(dealKey) {
+        if (deal.isEmpty()) return@LaunchedEffect
+        dealt = dealKey
+        deal.keys.reversed().forEachIndexed { order, uid ->
+            launch {
+                kotlinx.coroutines.delay(order * DEAL_STAGGER_MS)
+                deal[uid]?.animateTo(0f, spring(dampingRatio = 0.72f, stiffness = 240f))
+            }
+        }
+    }
+    val tilt = rememberDeviceTilt()
     val topState = key(visible.firstOrNull()?.uid) { remember { CardSwipeState() } }
     val top = visible.firstOrNull()
     controller.top = if (top != null) topState else null
@@ -183,24 +226,32 @@ fun SwipeDeck(
         visible.asReversed().forEachIndexed { reversedIndex, profile ->
             val depth = visible.size - 1 - reversedIndex
             key(profile.uid) {
-                if (depth == 0) {
-                    TopCard(profile, topState, onSwiped = { onSwiped(profile, it) }, onOpen = { onOpen(profile, it) })
-                } else {
-                    val progress by remember(topState) { derivedStateOf { topState.progress } }
-                    val scale = lerp(1f - depth * 0.05f, 1f - (depth - 1) * 0.05f, progress)
-                    val lift = lerp(depth * 16f, (depth - 1) * 16f, progress)
-                    ProfileCard(
-                        profile = profile,
-                        photoIndex = 0,
-                        onTapLeft = {},
-                        onTapRight = {},
-                        onOpen = {},
-                        modifier = Modifier.fillMaxSize().graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            translationY = lift.dp.toPx()
-                        },
-                    )
+                val dealIn = deal[profile.uid]
+                val dealing = Modifier.fillMaxSize().graphicsLayer {
+                    val p = dealIn?.value ?: 0f
+                    translationY = p * size.height * 1.2f
+                    rotationZ = p * DEAL_SPIN[depth.coerceIn(0, 2)]
+                }
+                Box(dealing) {
+                    if (depth == 0) {
+                        TopCard(profile, topState, tilt, onCommit = onDragCommit, onSwiped = { onSwiped(profile, it) }, onOpen = { onOpen(profile, it) })
+                    } else {
+                        val progress by remember(topState) { derivedStateOf { topState.progress } }
+                        val scale = lerp(1f - depth * 0.05f, 1f - (depth - 1) * 0.05f, progress)
+                        val lift = lerp(depth * 16f, (depth - 1) * 16f, progress)
+                        ProfileCard(
+                            profile = profile,
+                            photoIndex = 0,
+                            onTapLeft = {},
+                            onTapRight = {},
+                            onOpen = {},
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationY = lift.dp.toPx()
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -208,8 +259,21 @@ fun SwipeDeck(
 }
 
 @Composable
-private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDirection) -> Unit, onOpen: (Int) -> Unit) {
+private fun TopCard(
+    profile: Profile,
+    state: CardSwipeState,
+    tilt: DeviceTilt,
+    onCommit: (SwipeDirection) -> Unit,
+    onSwiped: (SwipeDirection) -> Unit,
+    onOpen: (Int) -> Unit,
+) {
     val scope = rememberCoroutineScope()
+    // The gyroscope tilt fades out under a finger and while the card is moving.
+    val tiltWeight by animateFloatAsState(
+        if (state.dragging || state.offset.isRunning) 0f else 1f,
+        spring(stiffness = Spring.StiffnessLow),
+        label = "tiltWeight",
+    )
     val haptics = EmberTheme.haptics
     var photoIndex by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
@@ -258,13 +322,16 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
                         onDragStart = { start ->
                             tracker.resetTracking()
                             state.grabbedTop = start.y < size.height / 2f
+                            state.dragging = true
                         },
                         onDragEnd = {
+                            state.dragging = false
                             val velocity = tracker.calculateVelocity()
                             val v = Offset(velocity.x, velocity.y)
                             scope.launch {
                                 val direction = state.decide(v)
                                 if (direction != null) {
+                                    onCommit(direction)
                                     state.flingAway(direction, v)
                                     onSwiped(direction)
                                 } else {
@@ -272,7 +339,10 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
                                 }
                             }
                         },
-                        onDragCancel = { scope.launch { state.reset() } },
+                        onDragCancel = {
+                            state.dragging = false
+                            scope.launch { state.reset() }
+                        },
                         onDrag = { change, drag ->
                             change.consume()
                             tracker.addPointerInputChange(change)
@@ -288,7 +358,8 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
                     // it when grabbed at the bottom), the way a held photo pivots in your hand.
                     val sign = if (state.grabbedTop) 1f else -1f
                     rotationZ = (o.x / state.width) * MAX_ROTATION * sign
-                    rotationY = nudge.value
+                    rotationX = tilt.x * tiltWeight
+                    rotationY = nudge.value + tilt.y * tiltWeight
                     cameraDistance = 14f * this.density
                     transformOrigin = TransformOrigin(0.5f, if (state.grabbedTop) 1.25f else -0.25f)
                 },
@@ -338,6 +409,8 @@ fun ProfileCard(
     modifier: Modifier = Modifier,
     stamps: @Composable () -> Unit = {},
     shared: Boolean = false,
+    /** The top card: its overlays (voice pill) are interactive. */
+    live: Boolean = shared,
 ) {
     val colors = EmberTheme.colors
     Box(
@@ -385,6 +458,8 @@ fun ProfileCard(
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.4f), Color.Transparent))),
         )
         PaginationBars(profile.photos.size, photoIndex, Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+        if (profile.isFreeTonight()) FreeTonightBadge(Modifier.align(Alignment.TopStart).padding(top = 26.dp, start = 14.dp))
+        if (live) VoicePill(profile, Modifier.align(Alignment.TopEnd).padding(top = 26.dp, end = 14.dp))
         Column(
             Modifier
                 .align(Alignment.BottomStart)
@@ -448,4 +523,8 @@ fun ProfileCard(
 }
 
 private const val MAX_ROTATION = 16f
+private const val DEAL_STAGGER_MS = 90L
+
+/** Each dealt card spins in from a slightly different angle (top, middle, bottom). */
+private val DEAL_SPIN = floatArrayOf(-7f, 9f, -5f)
 private const val INFO_FRACTION = 0.7f

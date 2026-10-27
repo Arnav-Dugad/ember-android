@@ -4,16 +4,21 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.github.arnavdugad.ember.core.audio.VoiceRecorder
+import io.github.arnavdugad.ember.data.location.CitySuggestion
 import io.github.arnavdugad.ember.data.location.LocationRepository
 import io.github.arnavdugad.ember.data.model.Gender
 import io.github.arnavdugad.ember.data.model.LookingFor
 import io.github.arnavdugad.ember.data.model.Photo
+import io.github.arnavdugad.ember.data.model.Place
 import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.ProfilePrompt
 import io.github.arnavdugad.ember.data.model.PromptTemplate
 import io.github.arnavdugad.ember.data.model.toDraft
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +28,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import javax.inject.Inject
 
 data class EditorState(
@@ -33,6 +39,15 @@ data class EditorState(
     val saving: Boolean = false,
     val saved: Boolean = false,
     val error: String? = null,
+    /** The signed-in uid once the existing profile has loaded (for playing the saved voice intro). */
+    val uid: String? = null,
+    /** Milliseconds recorded so far, or null when not recording. */
+    val recordingMs: Long? = null,
+    val voiceUploading: Boolean = false,
+    /** This session's fresh recording, played locally. */
+    val recordedVoice: File? = null,
+    /** The saved voice intro was removed; its document is deleted on save. */
+    val voiceRemoved: Boolean = false,
 ) {
     val canAddPhotos: Boolean get() = draft.photos.size + uploading < MAX_PHOTOS
 
@@ -50,6 +65,7 @@ class ProfileEditorViewModel @Inject constructor(
     private val profiles: ProfileRepository,
     private val auth: AuthRepository,
     private val location: LocationRepository,
+    private val recorder: VoiceRecorder,
 ) : ViewModel() {
     private val _state = MutableStateFlow(EditorState())
     val state: StateFlow<EditorState> = _state.asStateFlow()
@@ -60,7 +76,7 @@ class ProfileEditorViewModel @Inject constructor(
             val matchOnly = withTimeoutOrNull(2_000) { profiles.observeMyMatchOnly().firstOrNull() }
             _state.update { s ->
                 val draft = existing?.takeIf { it.name.isNotBlank() }?.toDraft(matchOnly) ?: s.draft
-                s.copy(draft = draft, loaded = true)
+                s.copy(draft = draft, loaded = true, uid = existing?.uid)
             }
         }
     }
@@ -74,7 +90,11 @@ class ProfileEditorViewModel @Inject constructor(
     fun setHeight(value: Int?) = edit { copy(heightCm = value) }
     fun setLookingFor(value: LookingFor) = edit { copy(lookingFor = value) }
     fun setAfterDark(value: Boolean) = edit { copy(afterDark = value) }
-    fun setCity(value: String) = edit { copy(city = value, lat = null, lng = null) }
+
+    /** From the city picker: the name plus city-level coordinates. */
+    fun setPlace(place: Place) = edit { copy(city = place.name, lat = place.lat, lng = place.lng) }
+
+    suspend fun searchCities(query: String): List<CitySuggestion> = location.searchCities(query)
 
     fun toggleVibe(key: String) = edit { copy(vibes = vibes.toggleCapped(key, EditorState.MAX_VIBES)) }
     fun toggleInterest(value: String) = edit { copy(interests = interests.toggleCapped(value, EditorState.MAX_INTERESTS)) }
@@ -115,6 +135,71 @@ class ProfileEditorViewModel @Inject constructor(
         viewModelScope.launch { runCatching { profiles.deletePhoto(photo) } }
     }
 
+    private var recordingJob: Job? = null
+
+    /** Starts the voice intro recording (RECORD_AUDIO already granted); it stops itself at 30 s. */
+    fun startRecording() {
+        if (recorder.isRecording || _state.value.voiceUploading) return
+        val started = runCatching { recorder.start() }
+        if (started.isFailure) {
+            _state.update { it.copy(error = started.exceptionOrNull()?.message ?: "Couldn't start recording.") }
+            return
+        }
+        _state.update { it.copy(recordingMs = 0L, error = null) }
+        recordingJob = viewModelScope.launch {
+            while (recorder.isRecording) {
+                val elapsed = recorder.elapsedMs
+                _state.update { it.copy(recordingMs = elapsed) }
+                if (elapsed >= VoiceRecorder.MAX_MS) {
+                    finishRecording()
+                    break
+                }
+                delay(50)
+            }
+        }
+    }
+
+    fun stopRecording() {
+        recordingJob?.cancel()
+        recordingJob = null
+        finishRecording()
+    }
+
+    /** Stops, then uploads the clip; the profile's duration is written on save. */
+    private fun finishRecording() {
+        val clip = recorder.stop()
+        if (clip == null) {
+            _state.update { it.copy(recordingMs = null, error = "That was a bit short. Hold on for at least a second.") }
+            return
+        }
+        _state.update { it.copy(recordingMs = null, voiceUploading = true) }
+        viewModelScope.launch {
+            val result = runCatching { profiles.uploadVoice(clip.file, clip.durationMs) }
+            _state.update { s ->
+                if (result.isSuccess) {
+                    s.copy(
+                        voiceUploading = false,
+                        recordedVoice = clip.file,
+                        voiceRemoved = false,
+                        draft = s.draft.copy(voiceDurationMs = clip.durationMs),
+                        saved = false,
+                    )
+                } else {
+                    clip.file.delete()
+                    s.copy(voiceUploading = false, error = "Couldn't save your voice intro: ${result.exceptionOrNull()?.message}")
+                }
+            }
+        }
+    }
+
+    fun removeVoice() = _state.update {
+        it.copy(draft = it.draft.copy(voiceDurationMs = null), recordedVoice = null, voiceRemoved = true, error = null, saved = false)
+    }
+
+    override fun onCleared() {
+        recorder.cancel()
+    }
+
     fun makeMainPhoto(photo: Photo) = edit { copy(photos = listOf(photo) + photos.filterNot { it.id == photo.id }) }
 
     fun locate() {
@@ -123,7 +208,7 @@ class ProfileEditorViewModel @Inject constructor(
             val city = runCatching { location.currentCity() }.getOrNull()
             _state.update { s ->
                 if (city == null) {
-                    s.copy(locating = false, error = "Couldn't find your city. You can type it instead.")
+                    s.copy(locating = false, error = "Couldn't find your city. You can pick it from the list instead.")
                 } else {
                     s.copy(locating = false, draft = s.draft.copy(city = city.city, lat = city.lat, lng = city.lng))
                 }
@@ -147,6 +232,7 @@ class ProfileEditorViewModel @Inject constructor(
                     location.locate(cleaned.city)?.let { cleaned = cleaned.copy(lat = it.lat, lng = it.lng) }
                 }
                 profiles.saveProfile(cleaned, finishOnboarding)
+                if (_state.value.voiceRemoved && cleaned.voiceDurationMs == null) runCatching { profiles.deleteVoice() }
             }
             _state.update {
                 it.copy(saving = false, saved = result.isSuccess, error = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't save. Try again." })

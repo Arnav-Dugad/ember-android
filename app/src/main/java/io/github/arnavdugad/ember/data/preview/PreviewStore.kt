@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.time.Instant
 import java.util.UUID
 
 @Serializable
@@ -41,6 +42,8 @@ internal data class StoredProfile(
     val lat: Double? = null,
     val lng: Double? = null,
     val afterDark: Boolean = false,
+    val voiceDurationMs: Int? = null,
+    val freeTonightUntil: Long? = null,
     val boundaries: List<String> = emptyList(),
     val turnOns: List<String> = emptyList(),
     val album: List<StoredPhoto> = emptyList(),
@@ -56,6 +59,9 @@ internal class PreviewStore(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
     private val file get() = File(context.filesDir, "preview/profile.json")
     private val photos get() = File(context.filesDir, "preview/photos").apply { mkdirs() }
+
+    /** The Preview user's voice intro. */
+    val voice: File get() = File(context.filesDir, "preview/voice.m4a")
 
     suspend fun load(): StoredProfile? = withContext(Dispatchers.IO) {
         runCatching { json.decodeFromString<StoredProfile>(file.readText()) }.getOrNull()
@@ -111,6 +117,8 @@ internal fun StoredProfile.toProfile(uid: String, albumCount: Int) = Profile(
     lng = lng,
     hideDistance = hideDistance,
     paused = paused,
+    freeTonightUntil = freeTonightUntil?.let(Instant::ofEpochMilli),
+    voiceDurationMs = voiceDurationMs,
 )
 
 internal fun StoredProfile.matchOnly() = MatchOnlyDetails(boundaries, turnOns)

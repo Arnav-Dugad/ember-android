@@ -1,5 +1,6 @@
 package io.github.arnavdugad.ember.data.remote
 
+import com.google.firebase.firestore.FieldValue
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.Gender
 import io.github.arnavdugad.ember.data.model.LookingFor
@@ -38,6 +39,8 @@ internal fun Map<*, *>.toProfile(uid: String): Profile = Profile(
     lng = dbl("lng"),
     hideDistance = bool("hideDistance"),
     paused = bool("paused"),
+    freeTonightUntil = instant("freeTonightUntil"),
+    voiceDurationMs = int("voiceDurationMs")?.takeIf { it > 0 },
 )
 
 internal fun Map<*, *>.toMatchOnly() = MatchOnlyDetails(boundaries = strings("boundaries"), turnOns = strings("turnOns"))
@@ -68,5 +71,7 @@ internal fun ProfileDraft.toFirestore(uid: String): Map<String, Any?> {
         "heightCm" to heightCm,
         "city" to city.trim(),
         "afterDark" to afterDark,
+        // Written with set(merge), so a removed voice intro has to delete the field explicitly.
+        "voiceDurationMs" to (voiceDurationMs ?: FieldValue.delete()),
     )
 }

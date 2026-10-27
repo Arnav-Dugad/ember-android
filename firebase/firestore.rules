@@ -103,6 +103,16 @@ service cloud.firestore {
       return data is bytes && data.size() > 0 && data.size() <= 900 * 1024;
     }
 
+    // Same cap for any other binary blob (voice intros are AAC audio).
+    function isBlob(data) {
+      return isImage(data);
+    }
+
+    // A voice intro is at most 30 s; one second of slack absorbs encoder rounding.
+    function isVoiceDuration(ms) {
+      return ms is int && ms >= 500 && ms <= 31000;
+    }
+
     // ---------- age ----------
 
     function isLeap(y) {
@@ -152,7 +162,7 @@ service cloud.firestore {
           'uid', 'name', 'age', 'gender', 'interestedIn', 'bio', 'photos', 'prompts',
           'interests', 'vibes', 'lookingFor', 'heightCm', 'city', 'geohash', 'lat', 'lng',
           'afterDark', 'privateAlbumCount', 'isDemo', 'onboarded', 'createdAt', 'updatedAt',
-          'lastActiveAt',
+          'lastActiveAt', 'freeTonightUntil', 'voiceDurationMs',
           // Privacy switches.
           'hideDistance', 'paused'
         ])
@@ -183,7 +193,13 @@ service cloud.firestore {
         && (!('privateAlbumCount' in d) || (d.privateAlbumCount is int
               && d.privateAlbumCount >= 0 && d.privateAlbumCount <= 12))
         && optionalTimestamp(d, 'updatedAt')
-        && optionalTimestamp(d, 'lastActiveAt');
+        && optionalTimestamp(d, 'lastActiveAt')
+        // "Free tonight" lasts at most 6 hours (plus 10 minutes of clock slack). It stays valid on
+        // later writes because request.time only moves forward.
+        && (!('freeTonightUntil' in d) || d.freeTonightUntil == null
+              || (d.freeTonightUntil is timestamp
+                  && d.freeTonightUntil <= request.time + duration.value(370, 'm')))
+        && (!('voiceDurationMs' in d) || d.voiceDurationMs == null || isVoiceDuration(d.voiceDurationMs));
     }
 
     match /users/{uid} {
@@ -247,9 +263,10 @@ service cloud.firestore {
               || !exists(accountPath(uid)));
       }
 
-      // Who liked `uid`. Unreadable by anyone: rules use exists() on these to authorize matches.
+      // Who liked `uid`. Only `uid` can read them ("Likes you"); rules also use exists() on these
+      // to authorize matches.
       match /likedBy/{likerId} {
-        allow read: if false;
+        allow read: if isOwner(uid) && isAdult();
         allow create: if isOwner(likerId) && isAdult()
           && likerId != uid
           && request.resource.data.keys().hasOnly(['createdAt', 'super'])
@@ -266,6 +283,20 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['createdAt'])
           && request.resource.data.createdAt == request.time;
         allow update: if false;
+      }
+
+      // People who blocked `uid`, written by the blocker next to their block so `uid`'s deck can
+      // drop them too. Only `uid` reads the list; only the blocker creates or deletes their entry,
+      // and only while (or in the same batch as) their block exists.
+      match /hiddenBy/{creatorId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(creatorId) && isAdult()
+          && creatorId != uid
+          && request.resource.data.keys().hasOnly(['createdAt'])
+          && request.resource.data.createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(creatorId)/blocks/$(uid));
+        allow update: if false;
+        allow delete: if isOwner(creatorId);
       }
     }
 
@@ -286,6 +317,21 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time;
       allow update: if false;
       allow delete: if isSignedIn() && resource.data.owner == me();
+    }
+
+    // ---------- voice intros ----------
+
+    // One AAC clip per user, stored as bytes like photos. Same audience as the profile.
+    match /voices/{uid} {
+      allow get: if isOwner(uid) || (isAdult() && !isBlockedBy(uid));
+      allow list: if false;
+      allow create, update: if isOwner(uid) && isAdult()
+        && request.resource.data.keys().hasOnly(['owner', 'data', 'durationMs', 'createdAt'])
+        && request.resource.data.owner == uid
+        && isBlob(request.resource.data.data)
+        && isVoiceDuration(request.resource.data.durationMs)
+        && request.resource.data.createdAt == request.time;
+      allow delete: if isOwner(uid);
     }
 
     // ---------- matches and chat ----------

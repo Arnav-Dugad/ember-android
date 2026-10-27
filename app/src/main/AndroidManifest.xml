@@ -8,11 +8,16 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- City-level location only: discovery never needs a precise fix. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- The 30-second voice intro on your profile; asked for the first time you tap record. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- The in-app updater installs new releases downloaded from GitHub. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature
         android:name="android.hardware.location"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.microphone"
         android:required="false" />
 
     <application

@@ -2,11 +2,12 @@ package io.github.arnavdugad.ember.data.preview
 
 import android.app.Activity
 import android.content.Context
-import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.remote.nearFirst
+import io.github.arnavdugad.ember.data.remote.withDistanceFrom
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.Uri
 import io.github.arnavdugad.ember.data.model.AccessStatus
+import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.Ages
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
@@ -32,6 +33,7 @@ import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import io.github.arnavdugad.ember.data.repo.UnderageException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +48,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -179,6 +184,7 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
                 lat = draft.lat,
                 lng = draft.lng,
                 afterDark = draft.afterDark,
+                voiceDurationMs = draft.voiceDurationMs,
                 boundaries = draft.matchOnly.boundaries,
                 turnOns = draft.matchOnly.turnOns,
             )
@@ -198,26 +204,39 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     override suspend fun touchLastActive() = Unit
 
+    override suspend fun setFreeTonight(enabled: Boolean) {
+        val until = if (enabled) Instant.now().plus(Duration.ofHours(6)) else null
+        persist { it.copy(freeTonightUntil = until?.toEpochMilli()) }
+        me.update { it?.copy(freeTonightUntil = until) }
+    }
+
+    override suspend fun uploadVoice(file: File, durationMs: Int) {
+        withContext(Dispatchers.IO) { file.copyTo(store.voice, overwrite = true) }
+    }
+
+    override suspend fun deleteVoice() {
+        withContext(Dispatchers.IO) { store.voice.delete() }
+    }
+
+    /** Only the Preview user has a voice intro; demo people never recorded one. */
+    override suspend fun voiceFile(uid: String): File? = if (uid == ME) store.voice.takeIf { it.exists() } else null
+
     // --- Discovery ---
 
     override suspend fun loadDeck(filters: DiscoveryFilters, afterDark: Boolean): List<Profile> {
         delay(700)
         val mine = me.value
+        val origin = filters.browseFrom?.let { it.lat to it.lng } ?: mine?.lat?.let { lat -> mine.lng?.let { lng -> lat to lng } }
+        val now = Instant.now()
         return people.asSequence()
             .map { it.profile }
             .filter { it.uid !in swipes && it.uid !in blocked }
             .filter { it.age in filters.minAge..filters.maxAge }
             .filter { filters.lookingFor.isEmpty() || it.lookingFor in filters.lookingFor }
             .filter { !afterDark || it.afterDark || it.lookingFor.isAdventurous }
+            .filter { !filters.freeTonightOnly || it.isFreeTonight(now) }
             .filter { mine?.interestedIn.isNullOrEmpty() || it.gender in mine.interestedIn }
-            .map { p ->
-                val here = mine?.lat?.let { lat -> mine.lng?.let { lng -> lat to lng } }
-                if (here != null && p.lat != null && p.lng != null) {
-                    p.copy(distanceKm = kotlin.math.ceil(Geo.distanceKm(here.first, here.second, p.lat, p.lng)).toInt().coerceAtLeast(1))
-                } else {
-                    p
-                }
-            }
+            .map { it.withDistanceFrom(origin) }
             .toList()
             .nearFirst(filters.maxDistanceKm, kotlin.random.Random(swipes.size))
             .take(40)
@@ -255,6 +274,23 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
         if (matches.value.containsKey(matchId(targetUid))) return false
         return swipes.remove(targetUid) != null
     }
+
+    /**
+     * Five demo people who "like you": ones who like back, so liking them from the deck matches
+     * (and their tile unblurs). Picked once, preferring people you'd see in your deck.
+     */
+    override fun observeLikesYou(): Flow<List<Admirer>> = matches.map {
+        val wanted = me.value?.interestedIn.orEmpty()
+        val admirers = likesYou ?: people
+            .filter { it.likesBack && (wanted.isEmpty() || it.profile.gender in wanted) }
+            .ifEmpty { people.filter { it.likesBack } }
+            .take(5)
+            .mapIndexed { i, p -> Admirer(p.profile.uid, superLike = i == 1, likedAt = Instant.now().minus(Duration.ofHours(3L + i * 7L))) }
+            .also { likesYou = it }
+        admirers.filterNot { it.uid in blocked }
+    }
+
+    private var likesYou: List<Admirer>? = null
 
     // --- Matches and chat ---
 
@@ -341,6 +377,7 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     override suspend fun deleteAccount() {
         delay(500)
+        likesYou = null
         me.value = null
         myMatchOnly.value = null
         swipes.clear()
