@@ -2,6 +2,7 @@ package io.github.arnavdugad.ember.ui.profile
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,6 +72,7 @@ import io.github.arnavdugad.ember.data.model.AccessStatus
 import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
+import io.github.arnavdugad.ember.ui.discover.FreeTonightBadge
 import io.github.arnavdugad.ember.ui.main.sharedPhoto
 import io.github.arnavdugad.ember.ui.onboarding.formatHeight
 import io.github.arnavdugad.ember.ui.safety.SafetySheet
@@ -89,6 +92,7 @@ fun ProfileDetailScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     var safetyOpen by remember { mutableStateOf(false) }
+    var viewerAt by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(state.removed) { if (state.removed) onRemoved() }
 
     val profile = state.profile
@@ -113,6 +117,7 @@ fun ProfileDetailScreen(
                 onRequestAlbum = viewModel::requestAlbum,
                 onWithdrawAlbum = viewModel::withdrawAlbum,
                 onOpenAlbum = { onOpenAlbum(profile.name) },
+                onOpenPhoto = { viewerAt = it },
             )
         }
 
@@ -175,6 +180,11 @@ fun ProfileDetailScreen(
             onBlock = viewModel::block,
             onUnmatch = viewModel::unmatch,
         )
+
+        val at = viewerAt
+        if (profile != null && at != null && profile.photos.isNotEmpty()) {
+            PhotoViewer(photos = profile.photos, initial = at, name = profile.name, onDismiss = { viewerAt = null })
+        }
     }
 }
 
@@ -201,6 +211,7 @@ private fun ProfileBody(
     onRequestAlbum: () -> Unit,
     onWithdrawAlbum: () -> Unit,
     onOpenAlbum: () -> Unit,
+    onOpenPhoto: (Int) -> Unit,
 ) {
     val colors = EmberTheme.colors
     val scroll = rememberScrollState()
@@ -224,7 +235,9 @@ private fun ProfileBody(
                     contentDescription = "${profile.name}'s photo ${page + 1}",
                     modifier = Modifier
                         .fillMaxSize()
-                        .then(if (page == 0) Modifier.sharedPhoto("photo-${profile.uid}") else Modifier),
+                        .then(if (page == 0) Modifier.sharedPhoto("photo-${profile.uid}") else Modifier)
+                        // Tap for the full-screen viewer (pinch to zoom, drag down to close).
+                        .pointerInput(page) { detectTapGestures { onOpenPhoto(page) } },
                 )
             }
             Box(
@@ -274,6 +287,7 @@ private fun ProfileBody(
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (profile.isFreeTonight()) FreeTonightBadge(overPhoto = false)
                 GlassTag("${profile.lookingFor.emoji} ${profile.lookingFor.label}")
                 profile.heightCm?.let { GlassTag("📏 ${formatHeight(it)}") }
                 profile.gender?.let { GlassTag(it.label) }

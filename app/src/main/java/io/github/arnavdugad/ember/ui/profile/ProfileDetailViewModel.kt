@@ -11,10 +11,12 @@ import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ReportReason
+import io.github.arnavdugad.ember.data.remote.withDistanceFrom
 import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
+import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +43,7 @@ class ProfileDetailViewModel @AssistedInject constructor(
     private val matches: MatchRepository,
     private val albums: AlbumRepository,
     private val safety: SafetyRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
     @AssistedFactory
     interface Factory {
@@ -52,7 +55,10 @@ class ProfileDetailViewModel @AssistedInject constructor(
 
     init {
         viewModelScope.launch {
-            val profile = runCatching { profiles.getProfile(uid) }.getOrNull()
+            val loaded = runCatching { profiles.getProfile(uid) }.getOrNull()
+            // In travel mode the distance is measured from the city you're browsing, like the deck.
+            val travel = runCatching { settings.current().filters.browseFrom }.getOrNull()
+            val profile = if (travel != null) loaded?.withDistanceFrom(travel.lat to travel.lng) else loaded
             _state.update { it.copy(profile = profile, loading = false) }
         }
         viewModelScope.launch {
