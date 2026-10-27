@@ -66,6 +66,7 @@ import io.github.arnavdugad.ember.ui.album.MyAlbumScreen
 import io.github.arnavdugad.ember.ui.chat.ChatScreen
 import io.github.arnavdugad.ember.ui.discover.DiscoverScreen
 import io.github.arnavdugad.ember.ui.discover.DiscoverViewModel
+import io.github.arnavdugad.ember.ui.likes.LikesYouScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesViewModel
 import io.github.arnavdugad.ember.ui.profile.EditProfileScreen
@@ -93,6 +94,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object SettingsRoute
 
 @Serializable data object MyAlbumRoute
+
+@Serializable data object LikesYouRoute
 
 @Serializable data class AlbumViewerRoute(val ownerUid: String, val ownerName: String)
 
@@ -181,6 +184,7 @@ fun MainScaffold(deepLinks: DeepLinks) {
                                 viewModel = vm,
                                 onOpenProfile = { uid, index -> nav.navigate(ProfileRoute(uid, index, fromDeck = true)) },
                                 onOpenChat = { nav.navigate(ChatRoute(it)) },
+                                onOpenLikes = { nav.navigate(LikesYouRoute) },
                             )
                         }
                     }
@@ -227,6 +231,13 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     composable<EditProfileRoute> { EditProfileScreen(onBack = { nav.popBackStack() }) }
                     composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }) }
                     composable<MyAlbumRoute> { MyAlbumScreen(onBack = { nav.popBackStack() }) }
+                    composable<LikesYouRoute> {
+                        LikesYouScreen(
+                            onBack = { nav.popBackStack() },
+                            onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
+                            onBackToDeck = { nav.popBackStack(DiscoverRoute, inclusive = false) },
+                        )
+                    }
                     composable<AlbumViewerRoute> { backStack ->
                         val route = backStack.toRoute<AlbumViewerRoute>()
                         AlbumViewerScreen(ownerUid = route.ownerUid, ownerName = route.ownerName, onBack = { nav.popBackStack() })

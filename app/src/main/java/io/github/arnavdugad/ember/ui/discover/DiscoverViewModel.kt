@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.arnavdugad.ember.core.analytics.Analytics
 import io.github.arnavdugad.ember.core.image.PaletteExtractor
+import io.github.arnavdugad.ember.data.location.CitySuggestion
+import io.github.arnavdugad.ember.data.location.LocationRepository
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Profile
@@ -19,16 +21,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.LocalDateTime
 import javax.inject.Inject
 
 data class DiscoverState(
     val deck: List<Profile> = emptyList(),
     val loading: Boolean = true,
+    /** Pull-to-refresh in progress (the deck stays visible underneath). */
+    val refreshing: Boolean = false,
+    /** Bumped whenever a fresh deck replaces the old one, so the cards are dealt in again. */
+    val dealKey: Int = 0,
     val error: String? = null,
     val filters: DiscoveryFilters = DiscoveryFilters(),
     val afterDark: Boolean = false,
@@ -36,6 +47,9 @@ data class DiscoverState(
     val rewinding: Boolean = false,
     val glow: Color? = null,
     val celebration: Celebration? = null,
+    val picks: List<Pick> = emptyList(),
+    /** True from 6 pm, when today's picks are out; before that the list is yesterday's. */
+    val picksFresh: Boolean = false,
 )
 
 data class Celebration(val match: Match, val them: Profile?)
@@ -44,20 +58,37 @@ data class Celebration(val match: Match, val them: Profile?)
 class DiscoverViewModel @Inject constructor(
     private val discovery: DiscoveryRepository,
     private val matches: MatchRepository,
-    profiles: ProfileRepository,
+    private val profiles: ProfileRepository,
     private val settings: SettingsRepository,
+    private val location: LocationRepository,
     private val palette: PaletteExtractor,
     private val analytics: Analytics,
 ) : ViewModel() {
     private val _state = MutableStateFlow(DiscoverState())
     val state: StateFlow<DiscoverState> = _state.asStateFlow()
 
-    val myPhotoUrl: StateFlow<String?> = profiles.observeMyProfile()
-        .map { it?.firstPhoto?.url }
+    val me: StateFlow<Profile?> = profiles.observeMyProfile()
+        .catch { emit(null) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val myPhotoUrl: StateFlow<String?> = me.map { it?.firstPhoto?.url }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** People who liked me and aren't matched yet: the "Likes you" chip's count. */
+    val likesYouCount: StateFlow<Int> = combine(
+        discovery.observeLikesYou().catch { emit(emptyList()) },
+        matches.observeMatches().catch { emit(emptyList()) },
+    ) { admirers, matchList ->
+        val matched = matchList.map { it.otherUid }.toSet()
+        admirers.count { it.uid !in matched }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     private var loadJob: Job? = null
     private var glowJob: Job? = null
+
+    /** Everyone the last full load returned: daily picks and the profile screen's buttons draw from it. */
+    private var pool: List<Profile> = emptyList()
+    private val swipedThisSession = mutableSetOf<String>()
 
     /** Profiles liked this session, so a new match can be celebrated (not ones from earlier). */
     private val recentLikes = mutableMapOf<String, Profile>()
@@ -87,20 +118,30 @@ class DiscoverViewModel @Inject constructor(
         }
     }
 
-    fun reload() {
+    fun reload() = load(pull = false)
+
+    /** Pull to refresh: the deck stays put until the new one is in, then it's dealt again. */
+    fun refresh() = load(pull = true)
+
+    private fun load(pull: Boolean) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            _state.update { it.copy(loading = true, error = null) }
+            _state.update { it.copy(loading = true, refreshing = pull, error = null) }
             val s = _state.value
             val result = runCatching { discovery.loadDeck(s.filters, s.afterDark) }
-            _state.update {
-                it.copy(
+            result.getOrNull()?.let { pool = it }
+            _state.update { s ->
+                s.copy(
                     loading = false,
-                    deck = result.getOrDefault(emptyList()),
+                    refreshing = false,
+                    // A failed pull keeps the cards you had; a failed load shows the error state.
+                    deck = result.getOrElse { if (pull) s.deck else emptyList() },
+                    dealKey = if (result.isSuccess) s.dealKey + 1 else s.dealKey,
                     error = result.exceptionOrNull()?.let { "Couldn't load profiles. Check your connection and try again." },
                 )
             }
             updateGlow()
+            updatePicks()
         }
     }
 
@@ -111,18 +152,26 @@ class DiscoverViewModel @Inject constructor(
             val more = runCatching { discovery.loadDeck(s.filters, s.afterDark) }.getOrDefault(emptyList())
             _state.update { state ->
                 val have = state.deck.map { it.uid }.toSet()
-                state.copy(deck = state.deck + more.filterNot { it.uid in have || it.uid == state.lastSwipe?.first?.uid })
+                state.copy(deck = state.deck + more.filterNot { it.uid in have || it.uid == state.lastSwipe?.first?.uid || it.uid in swipedThisSession })
             }
         }
     }
 
     fun onSwiped(profile: Profile, direction: SwipeDirection) {
-        _state.update { s -> s.copy(deck = s.deck.filterNot { it.uid == profile.uid }, lastSwipe = profile to direction) }
+        swipedThisSession += profile.uid
+        _state.update { s ->
+            s.copy(
+                deck = s.deck.filterNot { it.uid == profile.uid },
+                picks = s.picks.filterNot { it.profile.uid == profile.uid },
+                lastSwipe = profile to direction,
+            )
+        }
         if (direction != SwipeDirection.Nope) recentLikes[profile.uid] = profile
         analytics.log("swipe", "direction" to direction.key)
         viewModelScope.launch {
             runCatching { discovery.swipe(profile, direction) }.onFailure { e ->
                 // Put the card back rather than silently losing a like.
+                swipedThisSession -= profile.uid
                 _state.update { s -> s.copy(deck = listOf(profile) + s.deck, error = e.message ?: "That swipe didn't go through.") }
             }
         }
@@ -130,9 +179,13 @@ class DiscoverViewModel @Inject constructor(
         if (_state.value.deck.size < 4) loadMore()
     }
 
-    /** From the full profile's like/nope buttons. */
+    /** From the full profile's like/nope buttons (a deck card or one of today's picks). */
     fun swipeByUid(uid: String, direction: SwipeDirection) {
-        val profile = _state.value.deck.firstOrNull { it.uid == uid } ?: return
+        val s = _state.value
+        val profile = s.deck.firstOrNull { it.uid == uid }
+            ?: s.picks.firstOrNull { it.profile.uid == uid }?.profile
+            ?: pool.firstOrNull { it.uid == uid && it.uid !in swipedThisSession }
+            ?: return
         onSwiped(profile, direction)
     }
 
@@ -145,12 +198,14 @@ class DiscoverViewModel @Inject constructor(
             _state.update { s ->
                 if (ok.getOrDefault(false)) {
                     recentLikes.remove(profile.uid)
+                    swipedThisSession -= profile.uid
                     s.copy(deck = listOf(profile) + s.deck, lastSwipe = null, rewinding = false)
                 } else {
                     s.copy(rewinding = false, lastSwipe = null, error = "That one can't be undone (it was a match, or it's been a while).")
                 }
             }
             updateGlow()
+            updatePicks()
         }
     }
 
@@ -162,9 +217,48 @@ class DiscoverViewModel @Inject constructor(
         viewModelScope.launch { settings.setFilters(filters) }
     }
 
+    /** Travel mode off: back to browsing from your own city. */
+    fun stopTravel() {
+        viewModelScope.launch { settings.clearTravel() }
+    }
+
+    fun setFreeTonight(enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { profiles.setFreeTonight(enabled) }.onFailure {
+                _state.update { s -> s.copy(error = "Couldn't update Free tonight. Try again.") }
+            }
+        }
+        analytics.log("free_tonight", "on" to enabled)
+    }
+
+    suspend fun searchCities(query: String): List<CitySuggestion> = location.searchCities(query)
+
     fun dismissCelebration() = _state.update { it.copy(celebration = null) }
 
     fun clearError() = _state.update { it.copy(error = null) }
+
+    /**
+     * Today's picks: chosen once per picks-day from the loaded candidates and remembered on the
+     * device, then shown minus anyone swiped since. Recomputed after every load because the day
+     * may have rolled over at 6 pm.
+     */
+    private suspend fun updatePicks() {
+        val mine = me.value ?: myProfileOnce() ?: return
+        val now = LocalDateTime.now()
+        val day = DailyPicks.dayOf(now)
+        val stored = runCatching { settings.dailyPicks(mine.uid, day.toString()) }.getOrNull()
+        val uids = stored ?: DailyPicks.choose(pool, mine, mine.uid, day).map { it.uid }.also { chosen ->
+            if (chosen.isNotEmpty()) runCatching { settings.setDailyPicks(mine.uid, day.toString(), chosen) }
+        }
+        val byUid = pool.associateBy { it.uid }
+        val picks = uids.mapNotNull { byUid[it] }
+            .filter { it.uid !in swipedThisSession }
+            .map { Pick(it, DailyPicks.reason(mine, it)) }
+        _state.update { it.copy(picks = picks, picksFresh = DailyPicks.isFresh(now)) }
+    }
+
+    private suspend fun myProfileOnce(): Profile? =
+        runCatching { withTimeoutOrNull(3_000) { profiles.observeMyProfile().first { it != null } } }.getOrNull()
 
     private fun updateGlow() {
         val url = _state.value.deck.firstOrNull()?.firstPhoto?.url ?: return

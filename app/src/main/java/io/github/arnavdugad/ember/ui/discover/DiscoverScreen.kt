@@ -2,18 +2,21 @@ package io.github.arnavdugad.ember.ui.discover
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -25,10 +28,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FlightTakeoff
 import androidx.compose.material.icons.rounded.NightsStay
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Star
@@ -40,18 +46,28 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -65,6 +81,7 @@ import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.EmberWordmark
 import io.github.arnavdugad.ember.core.designsystem.GlassBottomSheet
 import io.github.arnavdugad.ember.core.designsystem.GlassButton
+import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
@@ -72,14 +89,19 @@ import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.glass
-import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.designsystem.shimmer
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.LookingFor
+import io.github.arnavdugad.ember.data.model.Place
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.main.BottomBarSpace
+import io.github.arnavdugad.ember.ui.onboarding.CityPickerSheet
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import kotlin.math.roundToInt
 
 @Composable
@@ -87,14 +109,41 @@ fun DiscoverScreen(
     viewModel: DiscoverViewModel,
     onOpenProfile: (uid: String, photoIndex: Int) -> Unit,
     onOpenChat: (matchId: String) -> Unit,
+    onOpenLikes: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val myPhoto by viewModel.myPhotoUrl.collectAsStateWithLifecycle()
+    val me by viewModel.me.collectAsStateWithLifecycle()
+    val likesCount by viewModel.likesYouCount.collectAsStateWithLifecycle()
     val controller = remember { DeckController() }
     val scope = rememberCoroutineScope()
     var filtersOpen by remember { mutableStateOf(false) }
-    var superBurst by remember { mutableStateOf(0L) }
+    var picksOpen by remember { mutableStateOf(false) }
+    var travelPickerOpen by remember { mutableStateOf(false) }
+    var travelDraft by remember { mutableStateOf<Place?>(null) }
+    var superBurst by remember { mutableLongStateOf(0L) }
+    var heartBurst by remember { mutableLongStateOf(0L) }
+    val nopeShake = remember { Animatable(0f) }
+    var likeCenter by remember { mutableStateOf(Offset.Unspecified) }
+    var deckCenter by remember { mutableStateOf(Offset.Unspecified) }
+    var overlayOrigin by remember { mutableStateOf(Offset.Zero) }
+    val pullState = rememberPullToRefreshState()
     val haptics = EmberTheme.haptics
+
+    LaunchedEffect(filtersOpen) { if (filtersOpen) travelDraft = state.filters.browseFrom }
+
+    fun shakeNope() {
+        scope.launch { nopeShake.shake(amplitude = 9f) }
+    }
+
+    // Feedback the moment a direction is decided: hearts for a like, a "no" shake for a nope.
+    fun committed(direction: SwipeDirection) {
+        when (direction) {
+            SwipeDirection.Like -> heartBurst = System.nanoTime()
+            SwipeDirection.Nope -> shakeNope()
+            SwipeDirection.Super -> superBurst = System.nanoTime()
+        }
+    }
 
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(tint = state.glow) }) {
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(bottom = BottomBarSpace)) {
@@ -111,38 +160,79 @@ fun DiscoverScreen(
                 Spacer(Modifier.width(10.dp))
                 GlassIconButton(Icons.Rounded.Tune, contentDescription = "Filters", onClick = { filtersOpen = true })
             }
-            Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                val phase = when {
-                    state.deck.isNotEmpty() -> DeckPhase.Deck
-                    state.loading -> DeckPhase.Loading
-                    else -> DeckPhase.Empty
-                }
-                // The deck springs up out of the skeleton instead of popping in.
-                AnimatedContent(
-                    targetState = phase,
-                    transitionSpec = {
-                        (fadeIn(tween(260)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = 300f), initialScale = 0.92f)) togetherWith fadeOut(tween(160))
-                    },
-                    label = "deckPhase",
-                ) { current ->
-                    when (current) {
-                        DeckPhase.Deck -> SwipeDeck(
-                            profiles = state.deck,
-                            controller = controller,
-                            onSwiped = { profile, dir ->
-                                if (dir == SwipeDirection.Super) superBurst = System.nanoTime()
-                                viewModel.onSwiped(profile, dir)
-                            },
-                            onOpen = { profile, index -> onOpenProfile(profile.uid, index) },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        DeckPhase.Loading -> Box(Modifier.fillMaxSize().shimmer(EmberShapes.card))
-                        DeckPhase.Empty -> EmptyDeck(
-                            error = state.error,
-                            afterDark = state.afterDark,
-                            onRetry = viewModel::reload,
-                            onWiden = { filtersOpen = true },
-                        )
+            // The chips and the deck scroll together inside the pull-to-refresh box: pulling down
+            // on the chips (or an empty deck) refreshes, while a drag on a card still moves the card.
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = {
+                    haptics.confirm()
+                    viewModel.refresh()
+                },
+                state = pullState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                indicator = { FlameRefreshIndicator(pullState, state.refreshing) },
+            ) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val height = maxHeight
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                        Column(Modifier.fillMaxWidth().height(height)) {
+                            QuickChips(
+                                travel = state.filters.browseFrom,
+                                freeTonightUntil = me?.freeTonightUntil?.takeIf { me?.isFreeTonight() == true },
+                                picks = state.picks.size,
+                                likes = likesCount,
+                                onStopTravel = {
+                                    haptics.tick()
+                                    viewModel.stopTravel()
+                                },
+                                onToggleFreeTonight = {
+                                    haptics.confirm()
+                                    viewModel.setFreeTonight(me?.isFreeTonight() != true)
+                                },
+                                onOpenPicks = { picksOpen = true },
+                                onOpenLikes = onOpenLikes,
+                            )
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .onGloballyPositioned { deckCenter = it.boundsInRoot().center },
+                            ) {
+                                val phase = when {
+                                    state.deck.isNotEmpty() -> DeckPhase.Deck
+                                    state.loading -> DeckPhase.Loading
+                                    else -> DeckPhase.Empty
+                                }
+                                // The deck springs up out of the skeleton instead of popping in.
+                                AnimatedContent(
+                                    targetState = phase,
+                                    transitionSpec = {
+                                        (fadeIn(tween(260)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = 300f), initialScale = 0.92f)) togetherWith fadeOut(tween(160))
+                                    },
+                                    label = "deckPhase",
+                                ) { current ->
+                                    when (current) {
+                                        DeckPhase.Deck -> SwipeDeck(
+                                            profiles = state.deck,
+                                            controller = controller,
+                                            onSwiped = { profile, dir -> viewModel.onSwiped(profile, dir) },
+                                            onOpen = { profile, index -> onOpenProfile(profile.uid, index) },
+                                            modifier = Modifier.fillMaxSize(),
+                                            dealKey = state.dealKey,
+                                            onDragCommit = ::committed,
+                                        )
+                                        DeckPhase.Loading -> Box(Modifier.fillMaxSize().shimmer(EmberShapes.card))
+                                        DeckPhase.Empty -> EmptyDeck(
+                                            error = state.error,
+                                            afterDark = state.afterDark,
+                                            onRetry = viewModel::reload,
+                                            onWiden = { filtersOpen = true },
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -150,6 +240,8 @@ fun DiscoverScreen(
                 controller = controller,
                 canRewind = state.lastSwipe != null && !state.rewinding,
                 enabled = state.deck.isNotEmpty(),
+                nopeShake = nopeShake.value,
+                onLikePositioned = { likeCenter = it },
                 onRewind = {
                     haptics.tick()
                     viewModel.rewind()
@@ -159,8 +251,18 @@ fun DiscoverScreen(
                         SwipeDirection.Nope -> haptics.reject()
                         else -> haptics.confirm()
                     }
+                    if (controller.top?.offset?.isRunning != true) committed(dir)
                     scope.launch { controller.swipe(dir) }
                 },
+            )
+        }
+
+        if (heartBurst != 0L && likeCenter.isSpecified && deckCenter.isSpecified) {
+            HeartBurst(
+                key = heartBurst,
+                from = likeCenter - overlayOrigin,
+                to = deckCenter - overlayOrigin,
+                modifier = Modifier.fillMaxSize().onGloballyPositioned { overlayOrigin = it.positionInRoot() },
             )
         }
 
@@ -186,12 +288,38 @@ fun DiscoverScreen(
             visible = filtersOpen,
             filters = state.filters,
             afterDark = state.afterDark,
+            browseFrom = travelDraft,
+            onPickCity = { travelPickerOpen = true },
+            onClearCity = { travelDraft = null },
             onApply = { filters, afterDark ->
                 viewModel.applyFilters(filters)
                 if (afterDark != state.afterDark) viewModel.setAfterDark(afterDark)
                 filtersOpen = false
             },
             onDismiss = { filtersOpen = false },
+        )
+
+        CityPickerSheet(
+            visible = travelPickerOpen,
+            title = "Browse from",
+            subtitle = "See people around another city, nearest first. Your own profile stays where you are.",
+            onPick = {
+                travelDraft = it
+                travelPickerOpen = false
+            },
+            onDismiss = { travelPickerOpen = false },
+            search = viewModel::searchCities,
+        )
+
+        PicksSheet(
+            visible = picksOpen,
+            picks = state.picks,
+            fresh = state.picksFresh,
+            onOpen = { profile ->
+                picksOpen = false
+                onOpenProfile(profile.uid, 0)
+            },
+            onDismiss = { picksOpen = false },
         )
 
         val celebration = state.celebration
@@ -212,6 +340,95 @@ fun DiscoverScreen(
 }
 
 private enum class DeckPhase { Loading, Deck, Empty }
+
+/**
+ * The row under the top bar: travel mode (when on), Free tonight, Today's picks and Likes you.
+ * It scrolls sideways on narrow phones.
+ */
+@Composable
+private fun QuickChips(
+    travel: Place?,
+    freeTonightUntil: Instant?,
+    picks: Int,
+    likes: Int,
+    onStopTravel: () -> Unit,
+    onToggleFreeTonight: () -> Unit,
+    onOpenPicks: () -> Unit,
+    onOpenLikes: () -> Unit,
+) {
+    val colors = EmberTheme.colors
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (travel != null) {
+            QuickChip(
+                "Browsing ${travel.name}",
+                active = true,
+                icon = Icons.Rounded.FlightTakeoff,
+                trailing = Icons.Rounded.Close,
+                a11y = "Browsing from ${travel.name}. Tap to turn travel mode off.",
+                onClick = onStopTravel,
+            )
+        }
+        val until = freeTonightUntil?.let { DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(it.atZone(ZoneId.systemDefault())) }
+        QuickChip(
+            if (until != null) "Free till $until" else "Free tonight",
+            active = until != null,
+            emoji = "🌙",
+            a11y = if (until != null) "Free tonight is on until $until. Tap to turn it off." else "Tell people you're free tonight",
+            onClick = onToggleFreeTonight,
+        )
+        QuickChip(if (picks > 0) "Today's picks · $picks" else "Today's picks", active = false, emoji = "✨", onClick = onOpenPicks)
+        QuickChip(
+            if (likes > 0) "Likes you · $likes" else "Likes you",
+            active = false,
+            icon = Icons.Rounded.Favorite,
+            iconTint = colors.like,
+            onClick = onOpenLikes,
+        )
+    }
+}
+
+@Composable
+private fun QuickChip(
+    text: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    emoji: String? = null,
+    icon: ImageVector? = null,
+    iconTint: Color? = null,
+    trailing: ImageVector? = null,
+    a11y: String? = null,
+) {
+    val colors = EmberTheme.colors
+    val fill by animateFloatAsState(if (active) 1f else 0f, label = "chipFill")
+    val content by animateColorAsState(if (active) colors.onAccent else colors.textPrimary, label = "chipText")
+    Row(
+        Modifier
+            .pressable(onClick = onClick, pressedScale = 0.94f, haptic = false)
+            .glass(PillShape, GlassDefaults.surface(), LocalHazeState.current)
+            .background(colors.accentHorizontal, PillShape, alpha = fill)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .then(if (a11y != null) Modifier.semantics(mergeDescendants = true) { contentDescription = a11y } else Modifier),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (emoji != null) {
+            Text(emoji, style = EmberTheme.type.caption)
+            Spacer(Modifier.width(6.dp))
+        }
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = if (active) content else iconTint ?: content, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(text, style = EmberTheme.type.caption, color = content)
+        if (trailing != null) {
+            Spacer(Modifier.width(6.dp))
+            Icon(trailing, contentDescription = null, tint = content, modifier = Modifier.size(14.dp))
+        }
+    }
+}
 
 @Composable
 private fun AfterDarkPill(enabled: Boolean, onToggle: () -> Unit) {
@@ -236,6 +453,8 @@ private fun ActionRow(
     controller: DeckController,
     canRewind: Boolean,
     enabled: Boolean,
+    nopeShake: Float,
+    onLikePositioned: (Offset) -> Unit,
     onRewind: () -> Unit,
     onSwipe: (SwipeDirection) -> Unit,
 ) {
@@ -250,10 +469,18 @@ private fun ActionRow(
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ActionButton(Icons.Rounded.Replay, "Rewind", colors.accentWarm, 50.dp, 0f, canRewind, onRewind)
-        ActionButton(Icons.Rounded.Close, "Nope", colors.nope, 66.dp, nope, enabled) { onSwipe(SwipeDirection.Nope) }
+        ActionButton(Icons.Rounded.Replay, "Rewind", colors.accentWarm, 50.dp, 0f, canRewind, onClick = onRewind)
+        ActionButton(Icons.Rounded.Close, "Nope", colors.nope, 66.dp, nope, enabled, shakeDp = nopeShake) { onSwipe(SwipeDirection.Nope) }
         ActionButton(Icons.Rounded.Star, "Super like", colors.superLike, 50.dp, superLike, enabled) { onSwipe(SwipeDirection.Super) }
-        ActionButton(Icons.Rounded.Favorite, "Like", colors.like, 66.dp, like, enabled) { onSwipe(SwipeDirection.Like) }
+        ActionButton(
+            Icons.Rounded.Favorite,
+            "Like",
+            colors.like,
+            66.dp,
+            like,
+            enabled,
+            modifier = Modifier.onGloballyPositioned { onLikePositioned(it.boundsInRoot().center) },
+        ) { onSwipe(SwipeDirection.Like) }
     }
 }
 
@@ -265,6 +492,8 @@ private fun ActionButton(
     size: Dp,
     activation: Float,
     enabled: Boolean,
+    modifier: Modifier = Modifier,
+    shakeDp: Float = 0f,
     onClick: () -> Unit,
 ) {
     // Disabled buttons dim their icon and drop their shadow; fading the whole layer would clip
@@ -278,12 +507,13 @@ private fun ActionButton(
         label = "iconTint",
     )
     Box(
-        Modifier
+        modifier
             .size(size)
             .graphicsLayer {
                 val s = 1f + activation * 0.16f
                 scaleX = s
                 scaleY = s
+                translationX = shakeDp * density
             }
             .pressable(onClick = onClick, enabled = enabled, pressedScale = 0.86f, haptic = false)
             .glass(CircleShape, GlassDefaults.chrome(), LocalHazeState.current, elevated = enabled)
@@ -331,65 +561,109 @@ private fun FiltersSheet(
     visible: Boolean,
     filters: DiscoveryFilters,
     afterDark: Boolean,
+    browseFrom: Place?,
+    onPickCity: () -> Unit,
+    onClearCity: () -> Unit,
     onApply: (DiscoveryFilters, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var distance by remember(filters, visible) { mutableStateOf(filters.maxDistanceKm.toFloat()) }
     var ages by remember(filters, visible) { mutableStateOf(filters.minAge.toFloat()..filters.maxAge.toFloat()) }
     var lookingFor by remember(filters, visible) { mutableStateOf(filters.lookingFor) }
+    var freeOnly by remember(filters, visible) { mutableStateOf(filters.freeTonightOnly) }
     var dark by remember(afterDark, visible) { mutableStateOf(afterDark) }
     val colors = EmberTheme.colors
     val sliderColors = SliderDefaults.colors(thumbColor = colors.accent, activeTrackColor = colors.accent, inactiveTrackColor = colors.surfaceHigh)
+    val switchColors = SwitchDefaults.colors(checkedTrackColor = colors.accent, checkedThumbColor = Color.White)
     GlassBottomSheet(visible = visible, onDismiss = onDismiss) {
-        Text("Discovery", style = EmberTheme.type.headline, color = colors.textPrimary)
-        Spacer(Modifier.height(18.dp))
-        Row {
-            SectionHeader("Maximum distance", Modifier.weight(1f))
-            Text(if (distance >= 160f) "Anywhere" else "${distance.roundToInt()} km", style = EmberTheme.type.label, color = colors.accent)
-        }
-        Slider(value = distance, onValueChange = { distance = it }, valueRange = 5f..160f, colors = sliderColors)
-        Spacer(Modifier.height(10.dp))
-        Row {
-            SectionHeader("Age range", Modifier.weight(1f))
-            Text("${ages.start.roundToInt()} – ${ages.endInclusive.roundToInt()}", style = EmberTheme.type.label, color = colors.accent)
-        }
-        RangeSlider(value = ages, onValueChange = { ages = it }, valueRange = 18f..80f, colors = sliderColors)
-        Spacer(Modifier.height(14.dp))
-        SectionHeader("Looking for")
-        Spacer(Modifier.height(10.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            LookingFor.entries.forEach { option ->
-                EmberChip(option.label, selected = option in lookingFor, emoji = option.emoji, onClick = {
-                    lookingFor = if (option in lookingFor) lookingFor - option else lookingFor + option
-                })
-            }
-        }
-        Spacer(Modifier.height(18.dp))
-        GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.tile) {
-            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("After Dark", style = EmberTheme.type.titleSmall, color = colors.textPrimary)
-                    Text("Darker theme, and only people open to casual or adventurous.", style = EmberTheme.type.caption, color = colors.textSecondary)
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("Discovery", style = EmberTheme.type.headline, color = colors.textPrimary)
+            Spacer(Modifier.height(18.dp))
+            SectionHeader("Browse from")
+            Spacer(Modifier.height(10.dp))
+            GlassSurface(Modifier.fillMaxWidth().pressable(onClick = onPickCity, pressedScale = 0.98f), shape = EmberShapes.tile) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.FlightTakeoff, contentDescription = null, tint = colors.accent, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(browseFrom?.name ?: "My location", style = EmberTheme.type.titleSmall, color = colors.textPrimary)
+                        Text(
+                            if (browseFrom != null) "Travel mode: distances start from here" else "Tap to browse from another city",
+                            style = EmberTheme.type.caption,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    if (browseFrom != null) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "Back to my location",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(32.dp).pressable(onClick = onClearCity).padding(6.dp),
+                        )
+                    }
                 }
-                Switch(dark, { dark = it }, colors = SwitchDefaults.colors(checkedTrackColor = colors.accent, checkedThumbColor = Color.White))
             }
+            Spacer(Modifier.height(16.dp))
+            Row {
+                SectionHeader("Maximum distance", Modifier.weight(1f))
+                Text(if (distance >= 160f) "Anywhere" else "${distance.roundToInt()} km", style = EmberTheme.type.label, color = colors.accent)
+            }
+            Slider(value = distance, onValueChange = { distance = it }, valueRange = 5f..160f, colors = sliderColors)
+            Spacer(Modifier.height(10.dp))
+            Row {
+                SectionHeader("Age range", Modifier.weight(1f))
+                Text("${ages.start.roundToInt()} – ${ages.endInclusive.roundToInt()}", style = EmberTheme.type.label, color = colors.accent)
+            }
+            RangeSlider(value = ages, onValueChange = { ages = it }, valueRange = 18f..80f, colors = sliderColors)
+            Spacer(Modifier.height(14.dp))
+            SectionHeader("Looking for")
+            Spacer(Modifier.height(10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LookingFor.entries.forEach { option ->
+                    EmberChip(option.label, selected = option in lookingFor, emoji = option.emoji, onClick = {
+                        lookingFor = if (option in lookingFor) lookingFor - option else lookingFor + option
+                    })
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.tile) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("🌙 Free tonight only", style = EmberTheme.type.titleSmall, color = colors.textPrimary)
+                        Text("Just the people who said they're free in the next few hours.", style = EmberTheme.type.caption, color = colors.textSecondary)
+                    }
+                    Switch(freeOnly, { freeOnly = it }, colors = switchColors)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.tile) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("After Dark", style = EmberTheme.type.titleSmall, color = colors.textPrimary)
+                        Text("Darker theme, and only people open to casual or adventurous.", style = EmberTheme.type.caption, color = colors.textSecondary)
+                    }
+                    Switch(dark, { dark = it }, colors = switchColors)
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            EmberButton(
+                "Show people",
+                onClick = {
+                    onApply(
+                        DiscoveryFilters(
+                            maxDistanceKm = distance.roundToInt(),
+                            minAge = ages.start.roundToInt(),
+                            maxAge = ages.endInclusive.roundToInt(),
+                            lookingFor = lookingFor,
+                            freeTonightOnly = freeOnly,
+                            browseFrom = browseFrom,
+                        ),
+                        dark,
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
-        Spacer(Modifier.height(20.dp))
-        EmberButton(
-            "Show people",
-            onClick = {
-                onApply(
-                    DiscoveryFilters(
-                        maxDistanceKm = distance.roundToInt(),
-                        minAge = ages.start.roundToInt(),
-                        maxAge = ages.endInclusive.roundToInt(),
-                        lookingFor = lookingFor,
-                    ),
-                    dark,
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 
@@ -397,7 +671,7 @@ private fun FiltersSheet(
 @Composable
 private fun SuperLikeBurst(key: Long) {
     val colors = EmberTheme.colors
-    val progress = remember(key) { androidx.compose.animation.core.Animatable(0f) }
+    val progress = remember(key) { Animatable(0f) }
     LaunchedEffect(key) { progress.animateTo(1f, tween(650)) }
     val t = progress.value
     if (t >= 1f) return
