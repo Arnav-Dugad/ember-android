@@ -96,6 +96,16 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         it[ARCHIVED_MATCHES] = if (archived) current + matchId else current - matchId
     }
 
+    /** Per match, the `sentAt` (epoch millis) of the newest incoming message already notified or seen. */
+    suspend fun notifiedMessages(): Map<String, Long> = store.data.first().asMap().mapNotNull { (key, value) ->
+        if (key.name.startsWith(NOTIFIED_MESSAGE_PREFIX) && value is Long) key.name.removePrefix(NOTIFIED_MESSAGE_PREFIX) to value else null
+    }.toMap()
+
+    suspend fun setNotifiedMessages(sentAt: Map<String, Long>) {
+        if (sentAt.isEmpty()) return
+        store.edit { prefs -> sentAt.forEach { (matchId, millis) -> prefs[notifiedMessageKey(matchId)] = millis } }
+    }
+
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
         val AFTER_DARK = booleanPreferencesKey("after_dark")
@@ -109,5 +119,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val SNOOZED_UNTIL = longPreferencesKey("update_snoozed_until")
         val NOTIFIED_VERSION = stringPreferencesKey("update_notified_version")
         val ARCHIVED_MATCHES = stringSetPreferencesKey("archived_matches")
+        const val NOTIFIED_MESSAGE_PREFIX = "notified_message_"
+
+        fun notifiedMessageKey(matchId: String) = longPreferencesKey(NOTIFIED_MESSAGE_PREFIX + matchId)
     }
 }

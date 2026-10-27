@@ -10,7 +10,8 @@ are no Cloud Functions and no Cloud Storage (both need the paid Blaze plan), so:
 - **Images live in Firestore** as compressed JPEG blobs (at most 900 KB per document), so the
   same rules that protect profiles also protect photos, chat images and private albums.
 - **No push notifications**: sending FCM pushes needs a server. Chat and matches are real-time
-  while the app is open.
+  while the app is open; in the background the app posts local notifications itself, from a
+  listener while its process is alive and from a 15-minute WorkManager check after that.
 
 Change this file first, then the rules, then the app.
 

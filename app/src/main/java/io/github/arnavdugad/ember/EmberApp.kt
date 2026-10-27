@@ -16,6 +16,8 @@ import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderF
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings
 import dagger.hilt.android.HiltAndroidApp
+import io.github.arnavdugad.ember.push.ChatNotifier
+import io.github.arnavdugad.ember.push.MessageSyncWorker
 import io.github.arnavdugad.ember.push.Notifications
 import io.github.arnavdugad.ember.update.UpdateWorker
 import okhttp3.OkHttpClient
@@ -31,16 +33,26 @@ class EmberApp :
 
     @Inject lateinit var okHttp: OkHttpClient
 
+    // Lazy: it reaches Firestore, which must not be touched before App Check is installed (or
+    // at all in Preview mode).
+    @Inject lateinit var chatNotifier: dagger.Lazy<ChatNotifier>
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
 
     override fun onCreate() {
         super.onCreate()
-        if (FirebaseApp.getApps(this).isNotEmpty()) configureFirebase()
+        val firebase = FirebaseApp.getApps(this).isNotEmpty()
+        if (firebase) configureFirebase()
         Notifications.createChannels(this)
         // Debug builds have a different application id and signing key, so a release APK could
         // never install over them; only real releases poll for updates in the background.
         if (!BuildConfig.DEBUG) UpdateWorker.schedule(this)
+        // No push server on the free plan: listen while the process lives, poll when it doesn't.
+        if (firebase) {
+            chatNotifier.get().start()
+            MessageSyncWorker.schedule(this)
+        }
     }
 
     private fun configureFirebase() {
