@@ -47,6 +47,10 @@ class ReportLimitException(blocked: Boolean) : Exception(
     },
 )
 
+/** Firebase provider ids, as returned by [AuthRepository.signInMethods]. */
+const val PROVIDER_GOOGLE = "google.com"
+const val PROVIDER_PASSWORD = "password"
+
 interface AuthRepository {
     val mode: BackendMode
 
@@ -66,6 +70,21 @@ interface AuthRepository {
 
     /** Fresh sign-in proof, required by Firebase before deleting or linking an account. */
     suspend fun reauthenticate(activity: Activity, password: String?)
+
+    /** Every sign-in method linked to this login: [PROVIDER_GOOGLE] and/or [PROVIDER_PASSWORD]. Empty in Preview. */
+    fun signInMethods(): Set<String>
+
+    /** The login's email address, if it has one. */
+    fun accountEmail(): String?
+
+    /** For Google logins: confirms with Google, then adds an email + password sign-in. */
+    suspend fun addPassword(activity: Activity, password: String)
+
+    /** For email logins: links a Google account so either can sign in. */
+    suspend fun linkGoogle(activity: Activity)
+
+    /** For password logins: confirms the current password, then sets a new one. */
+    suspend fun changePassword(currentPassword: String, newPassword: String)
 
     /** Re-reads the ID token so a freshly granted `adult` claim takes effect. */
     suspend fun refreshClaims(): Boolean

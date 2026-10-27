@@ -15,6 +15,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
+import io.github.arnavdugad.ember.data.repo.PROVIDER_GOOGLE
+import io.github.arnavdugad.ember.data.repo.PROVIDER_PASSWORD
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
@@ -79,6 +81,32 @@ class FirebaseAuthRepository @Inject constructor(
             EmailAuthProvider.getCredential(email, password?.takeIf { it.isNotBlank() } ?: error("Enter your password to confirm."))
         }
         user.reauthenticate(credential).await()
+    }
+
+    override fun signInMethods(): Set<String> =
+        auth.currentUser?.providerData.orEmpty().map { it.providerId }.filter { it == PROVIDER_GOOGLE || it == PROVIDER_PASSWORD }.toSet()
+
+    override fun accountEmail(): String? = auth.currentUser?.email
+
+    override suspend fun addPassword(activity: Activity, password: String) {
+        val user = auth.currentUser ?: error("You're signed out.")
+        val email = user.email ?: error("Your Google account didn't share an email address, so a password can't be added.")
+        user.reauthenticate(GoogleAuthProvider.getCredential(googleIdToken(activity), null)).await()
+        user.linkWithCredential(EmailAuthProvider.getCredential(email, password)).await()
+        user.reload().await()
+    }
+
+    override suspend fun linkGoogle(activity: Activity) {
+        val user = auth.currentUser ?: error("You're signed out.")
+        user.linkWithCredential(GoogleAuthProvider.getCredential(googleIdToken(activity), null)).await()
+        user.reload().await()
+    }
+
+    override suspend fun changePassword(currentPassword: String, newPassword: String) {
+        val user = auth.currentUser ?: error("You're signed out.")
+        val email = user.email ?: error("This account has no email.")
+        user.reauthenticate(EmailAuthProvider.getCredential(email, currentPassword)).await()
+        user.updatePassword(newPassword).await()
     }
 
     /** Shows the Google account sheet and returns the chosen account's ID token. */

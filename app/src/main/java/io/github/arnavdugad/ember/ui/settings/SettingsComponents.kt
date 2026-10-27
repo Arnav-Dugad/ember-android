@@ -1,6 +1,8 @@
 package io.github.arnavdugad.ember.ui.settings
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
@@ -25,8 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import io.github.arnavdugad.ember.R
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
@@ -63,13 +68,15 @@ internal fun SettingsRow(
     subtitle: String? = null,
     danger: Boolean = false,
     onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val colors = EmberTheme.colors
-    val modifier = if (onClick != null) Modifier.pressable(onClick = onClick, pressedScale = 0.98f) else Modifier
+    val modifier = if (onClick != null) Modifier.pressable(onClick = onClick, enabled = enabled, pressedScale = 0.98f) else Modifier
     GlassSurface(Modifier.fillMaxWidth().then(modifier), shape = EmberShapes.panel) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            SettingsIconTile(icon, danger)
+            if (leading != null) leading() else SettingsIconTile(icon, danger)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = EmberTheme.type.titleSmall, color = if (danger) colors.danger else colors.textPrimary)
@@ -113,6 +120,28 @@ internal fun SettingsToggleRow(
                 colors = SwitchDefaults.colors(checkedTrackColor = colors.accent, checkedThumbColor = Color.White),
             )
         }
+    }
+}
+
+/** Google's "G" in full colour on a white tile: Google's brand rules don't allow recolouring it. */
+@Composable
+internal fun GoogleTile() {
+    Box(
+        Modifier.size(40.dp).background(Color.White, EmberShapes.small).border(1.dp, EmberTheme.colors.divider, EmberShapes.small),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(painterResource(R.drawable.ic_google_g), contentDescription = null, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** "✓ Linked" at the end of a sign-in method row. */
+@Composable
+internal fun LinkedBadge() {
+    val colors = EmberTheme.colors
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = colors.like, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("Linked", style = EmberTheme.type.label, color = colors.like)
     }
 }
 

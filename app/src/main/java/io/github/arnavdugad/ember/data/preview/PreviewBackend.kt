@@ -122,6 +122,15 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     override fun signInProvider(): String? = null
     override suspend fun reauthenticate(activity: Activity, password: String?) = Unit
 
+    override fun signInMethods(): Set<String> = emptySet()
+    override fun accountEmail(): String? = null
+    override suspend fun addPassword(activity: Activity, password: String) = noLogin()
+    override suspend fun linkGoogle(activity: Activity) = noLogin()
+    override suspend fun changePassword(currentPassword: String, newPassword: String) = noLogin()
+
+    private fun noLogin(): Nothing =
+        throw UnsupportedOperationException("Preview mode has no login to manage: everything stays on this phone. Sign-in methods need a Firebase project.")
+
     override suspend fun refreshClaims(): Boolean = authUser.value?.isAdult == true
 
     override suspend fun signOut() {
