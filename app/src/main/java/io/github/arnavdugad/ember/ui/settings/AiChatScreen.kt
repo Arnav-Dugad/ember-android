@@ -328,7 +328,7 @@ fun AiChatScreen(onBack: () -> Unit, viewModel: AiChatViewModel = hiltViewModel(
                             icon = Icons.Rounded.CloudSync,
                             title = "Keep my keys in my account",
                             subtitle = "Your keys and AI settings are saved to your Ember account, where only you can read them, so they're back " +
-                                "when you sign in on any phone. Signing out removes them from this phone. Off: they stay on this phone only.",
+                                "when you sign in on any phone. Off: they're kept on this phone only, until you sign out.",
                             checked = c.cloudSync,
                             onCheckedChange = viewModel::setCloudSync,
                         )

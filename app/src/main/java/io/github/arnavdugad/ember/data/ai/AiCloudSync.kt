@@ -23,8 +23,8 @@ import javax.inject.Singleton
  * writable only by them under the security rules), so they're back after signing in on any phone.
  *
  * On sign-in the newer of phone and account wins. Every change on the phone is pushed shortly
- * after. On sign-out the phone forgets the keys, so the next person to sign in doesn't inherit
- * them. Switching sync off deletes the account copy and keeps the phone's.
+ * after. On sign-out the phone forgets the keys either way, so the next person to sign in can't
+ * inherit them. Switching sync off deletes the account copy and keeps the phone's.
  */
 @Singleton
 class AiCloudSync @Inject constructor(
@@ -43,7 +43,8 @@ class AiCloudSync @Inject constructor(
                 uid = next
                 when {
                     next != null -> runCatching { pull(next) }
-                    previous != null && settings.current().cloudSync -> settings.forgetAccountData()
+                    // Always, synced or not: the next person to sign in must never inherit (or upload) them.
+                    previous != null -> settings.forgetAccountData()
                 }
             }
         }
