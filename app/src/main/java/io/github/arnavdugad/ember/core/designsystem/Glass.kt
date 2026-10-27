@@ -48,6 +48,8 @@ data class GlassStyle(
     val rimShade: Color,
     val innerGlow: Color,
     val shadow: Color,
+    /** False for glass over photos: the scene backdrop isn't what's visually behind it. */
+    val blursBackdrop: Boolean = true,
 )
 
 object GlassDefaults {
@@ -66,7 +68,14 @@ object GlassDefaults {
     @ReadOnlyComposable
     fun overPhoto(): GlassStyle {
         val base = style(boost = 0f, blur = 18.dp)
-        return base.copy(tint = Color.White.copy(alpha = 0.14f), fallback = Color.Black.copy(alpha = 0.42f), rimLight = Color.White.copy(alpha = 0.32f))
+        return base.copy(
+            tint = Color.White.copy(alpha = 0.14f),
+            fallback = Color.Black.copy(alpha = 0.38f),
+            rimLight = Color.White.copy(alpha = 0.32f),
+            rimShade = Color.White.copy(alpha = 0.06f),
+            innerGlow = Color.White.copy(alpha = 0.08f),
+            blursBackdrop = false,
+        )
     }
 
     @Composable
@@ -120,7 +129,7 @@ fun Modifier.glass(
     } else {
         this
     }
-    val material = if (haze != null && SupportsBlur) {
+    val material = if (haze != null && SupportsBlur && style.blursBackdrop) {
         Modifier.hazeBlur(
             input = HazeInput.Sources(haze),
             style = HazeBlurStyle {

@@ -54,6 +54,7 @@ fun GlassBottomSheet(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = EmberTheme.colors
+    OverlayEffect(visible)
     Box(Modifier.fillMaxSize()) {
         AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
             Box(

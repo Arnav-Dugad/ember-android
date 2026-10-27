@@ -42,7 +42,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
@@ -255,11 +257,12 @@ fun EmberTextField(
     keyboardType: KeyboardType = KeyboardType.Text,
     isPassword: Boolean = false,
     imeAction: androidx.compose.ui.text.input.ImeAction = androidx.compose.ui.text.input.ImeAction.Next,
-    onImeAction: () -> Unit = {},
+    onImeAction: (() -> Unit)? = null,
     error: String? = null,
     leading: (@Composable () -> Unit)? = null,
 ) {
     val colors = EmberTheme.colors
+    val focus = LocalFocusManager.current
     Column(modifier) {
         if (label != null) {
             Text(label, style = EmberTheme.type.caption, color = colors.textSecondary, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
@@ -273,7 +276,14 @@ fun EmberTextField(
             cursorBrush = SolidColor(colors.accent),
             visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
-            keyboardActions = KeyboardActions(onAny = { onImeAction() }),
+            // Without a handler, Next moves to the following field and Done hides the keyboard.
+            keyboardActions = KeyboardActions(onAny = {
+                when {
+                    onImeAction != null -> onImeAction()
+                    imeAction == androidx.compose.ui.text.input.ImeAction.Next -> if (!focus.moveFocus(FocusDirection.Next)) focus.clearFocus()
+                    else -> focus.clearFocus()
+                }
+            }),
             decorationBox = { inner ->
                 Row(
                     modifier = Modifier
