@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -45,6 +46,7 @@ import io.github.arnavdugad.ember.core.designsystem.GlassButton
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.GradientText
+import io.github.arnavdugad.ember.core.designsystem.OverlayEffect
 import io.github.arnavdugad.ember.core.image.EmberImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -70,6 +72,7 @@ fun MatchCelebration(
     val title = remember(match.id) { Animatable(0f) }
     val content = remember(match.id) { Animatable(0f) }
     BackHandler(onBack = onDismiss)
+    OverlayEffect(true)
 
     LaunchedEffect(match.id) {
         haptics.celebrate()
@@ -92,7 +95,13 @@ fun MatchCelebration(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.scrim)) {
+    // The overlay swallows every touch so taps can't fall through to the deck's buttons.
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(colors.scrim)
+            .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } },
+    ) {
         EmberBurst(key = match.id, modifier = Modifier.fillMaxSize(), origin = androidx.compose.ui.geometry.Offset(0.5f, 0.34f))
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
             val travel = maxWidth

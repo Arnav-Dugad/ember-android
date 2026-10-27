@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.LocationOn
@@ -68,7 +69,8 @@ import io.github.arnavdugad.ember.core.designsystem.DemoBadge
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
-import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
+import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
+import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
 import io.github.arnavdugad.ember.core.designsystem.PaginationBars
 import io.github.arnavdugad.ember.core.image.EmberImage
@@ -343,8 +345,17 @@ fun ProfileCard(
         Box(
             Modifier
                 .fillMaxSize()
+                // One tap handler for the whole card, so a tap can never both page and open:
+                // the info panel at the bottom opens the profile, the left third pages back,
+                // the rest pages forward.
                 .pointerInput(profile.uid, photoIndex) {
-                    detectTapGestures { pos -> if (pos.x < size.width / 3f) onTapLeft() else onTapRight() }
+                    detectTapGestures { pos ->
+                        when {
+                            pos.y > size.height * INFO_FRACTION -> onOpen()
+                            pos.x < size.width / 3f -> onTapLeft()
+                            else -> onTapRight()
+                        }
+                    }
                 },
         )
         Box(
@@ -376,14 +387,12 @@ fun ProfileCard(
                     DemoBadge()
                 }
                 Spacer(Modifier.weight(1f))
-                GlassIconButton(
-                    Icons.Rounded.KeyboardArrowUp,
-                    contentDescription = "Open ${profile.name}'s profile",
-                    onClick = onOpen,
-                    size = 40.dp,
-                    tint = Color.White,
-                    style = GlassDefaults.overPhoto(),
-                )
+                Box(
+                    Modifier.size(40.dp).glass(CircleShape, GlassDefaults.overPhoto(), LocalHazeState.current),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = "Open ${profile.name}'s profile", tint = Color.White, modifier = Modifier.size(20.dp))
+                }
             }
             val place = listOfNotNull(Geo.distanceLabel(profile.distanceKm), profile.city.ifBlank { null }).joinToString(" · ")
             if (place.isNotEmpty()) {
@@ -415,3 +424,4 @@ fun ProfileCard(
 }
 
 private const val MAX_ROTATION = 16f
+private const val INFO_FRACTION = 0.7f

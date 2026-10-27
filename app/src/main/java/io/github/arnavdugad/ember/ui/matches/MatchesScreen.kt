@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -79,7 +80,7 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
 
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(intensity = 0.7f) }) {
         LazyColumn(
-            Modifier.fillMaxSize().statusBarsPadding(),
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = BottomBarSpace + 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {

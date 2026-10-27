@@ -38,6 +38,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +56,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
+import io.github.arnavdugad.ember.core.designsystem.LocalOverlayCount
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
@@ -153,9 +156,10 @@ fun MainScaffold(deepLinks: DeepLinks) {
     }
 
     val haze = rememberHazeState()
+    val overlays = remember { mutableIntStateOf(0) }
     Box(Modifier.fillMaxSize()) {
         SharedTransitionLayout(Modifier.fillMaxSize().hazeSource(haze)) {
-            CompositionLocalProvider(LocalSharedScope provides this) {
+            CompositionLocalProvider(LocalSharedScope provides this, LocalOverlayCount provides overlays) {
                 NavHost(
                     navController = nav,
                     startDestination = DiscoverRoute,
@@ -230,7 +234,7 @@ fun MainScaffold(deepLinks: DeepLinks) {
             }
         }
         AnimatedVisibility(
-            visible = tab >= 0,
+            visible = tab >= 0 && overlays.intValue == 0,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),

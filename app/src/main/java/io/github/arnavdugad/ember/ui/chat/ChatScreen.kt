@@ -124,7 +124,8 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                 reverseLayout = true,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 110.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                // reverseLayout needs bottom alignment, or a short thread hugs the top.
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
             ) {
                 if (typing) item(key = "typing") { TypingBubble() }
                 val list = messages.orEmpty()

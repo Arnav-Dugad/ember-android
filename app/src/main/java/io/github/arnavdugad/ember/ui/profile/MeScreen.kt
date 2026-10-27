@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -100,6 +101,7 @@ fun MeScreen(onEdit: () -> Unit, onSettings: () -> Unit, onAlbum: () -> Unit, vi
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .statusBarsPadding()
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .padding(top = 16.dp, bottom = BottomBarSpace + 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
