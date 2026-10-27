@@ -46,6 +46,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -199,8 +200,12 @@ fun SwipeDeck(
     onDragCommit: (SwipeDirection) -> Unit = {},
 ) {
     val visible = profiles.take(3)
-    val deal = remember(dealKey) { visible.associate { it.uid to Animatable(1f) } }
+    // Saved with the screen, so coming back from a profile doesn't deal the same deck again.
+    var dealt by rememberSaveable { mutableIntStateOf(Int.MIN_VALUE) }
+    val deal = remember(dealKey) { if (dealKey != dealt) visible.associate { it.uid to Animatable(1f) } else emptyMap() }
     LaunchedEffect(dealKey) {
+        if (deal.isEmpty()) return@LaunchedEffect
+        dealt = dealKey
         deal.keys.reversed().forEachIndexed { order, uid ->
             launch {
                 kotlinx.coroutines.delay(order * DEAL_STAGGER_MS)
@@ -221,9 +226,9 @@ fun SwipeDeck(
         visible.asReversed().forEachIndexed { reversedIndex, profile ->
             val depth = visible.size - 1 - reversedIndex
             key(profile.uid) {
-                val dealt = deal[profile.uid]
+                val dealIn = deal[profile.uid]
                 val dealing = Modifier.fillMaxSize().graphicsLayer {
-                    val p = dealt?.value ?: 0f
+                    val p = dealIn?.value ?: 0f
                     translationY = p * size.height * 1.2f
                     rotationZ = p * DEAL_SPIN[depth.coerceIn(0, 2)]
                 }

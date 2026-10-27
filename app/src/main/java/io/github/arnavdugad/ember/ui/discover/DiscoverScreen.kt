@@ -130,7 +130,10 @@ fun DiscoverScreen(
     val pullState = rememberPullToRefreshState()
     val haptics = EmberTheme.haptics
 
-    LaunchedEffect(filtersOpen) { if (filtersOpen) travelDraft = state.filters.browseFrom }
+    fun openFilters() {
+        travelDraft = state.filters.browseFrom
+        filtersOpen = true
+    }
 
     fun shakeNope() {
         scope.launch { nopeShake.shake(amplitude = 9f) }
@@ -158,7 +161,7 @@ fun DiscoverScreen(
                     viewModel.setAfterDark(!state.afterDark)
                 })
                 Spacer(Modifier.width(10.dp))
-                GlassIconButton(Icons.Rounded.Tune, contentDescription = "Filters", onClick = { filtersOpen = true })
+                GlassIconButton(Icons.Rounded.Tune, contentDescription = "Filters", onClick = ::openFilters)
             }
             // The chips and the deck scroll together inside the pull-to-refresh box: pulling down
             // on the chips (or an empty deck) refreshes, while a drag on a card still moves the card.
@@ -227,7 +230,7 @@ fun DiscoverScreen(
                                             error = state.error,
                                             afterDark = state.afterDark,
                                             onRetry = viewModel::reload,
-                                            onWiden = { filtersOpen = true },
+                                            onWiden = ::openFilters,
                                         )
                                     }
                                 }

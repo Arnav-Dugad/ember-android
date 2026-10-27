@@ -128,6 +128,8 @@ class LikesYouViewModel @Inject constructor(
 fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackToDeck: () -> Unit, viewModel: LikesYouViewModel = hiltViewModel()) {
     val tiles by viewModel.tiles.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
+    var mysteryOpen by remember { mutableStateOf(false) }
+    // Kept after closing so the sheet doesn't empty out while it slides away.
     var mystery by remember { mutableStateOf<AdmirerTile?>(null) }
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(intensity = 0.7f) }) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -167,7 +169,12 @@ fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackTo
                 ) {
                     itemsIndexed(list, key = { _, tile -> tile.admirer.uid }) { index, tile ->
                         AdmirerCard(tile, index) {
-                            if (tile.matched) onOpenProfile(tile.admirer.uid) else mystery = tile
+                            if (tile.matched) {
+                                onOpenProfile(tile.admirer.uid)
+                            } else {
+                                mystery = tile
+                                mysteryOpen = true
+                            }
                         }
                     }
                     item(span = { GridItemSpan(2) }) {
@@ -183,12 +190,13 @@ fun LikesYouScreen(onBack: () -> Unit, onOpenProfile: (String) -> Unit, onBackTo
             }
         }
 
-        val open = mystery
-        GlassBottomSheet(visible = open != null, onDismiss = { mystery = null }) {
-            if (open != null) MysterySheet(open, onBackToDeck = {
-                mystery = null
-                onBackToDeck()
-            })
+        GlassBottomSheet(visible = mysteryOpen, onDismiss = { mysteryOpen = false }) {
+            mystery?.let { tile ->
+                MysterySheet(tile, onBackToDeck = {
+                    mysteryOpen = false
+                    onBackToDeck()
+                })
+            }
         }
     }
 }
