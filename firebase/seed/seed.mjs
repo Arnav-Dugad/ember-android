@@ -266,7 +266,7 @@ function personPlan(person, index, now) {
     },
     lastActiveMinutesAgo: int(5, 3 * 24 * 60),
     account: { ...birth, termsVersion: "demo" },
-    likesBack: chance(0.55),
+    likesBack: chance(0.7),
     matchOnly: { boundaries: person.boundaries ?? [], turnOns: person.turnOns ?? [] },
   };
 }

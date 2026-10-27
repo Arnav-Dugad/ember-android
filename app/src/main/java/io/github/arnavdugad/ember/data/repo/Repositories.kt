@@ -39,6 +39,12 @@ interface AuthRepository {
     /** Enters the offline demo (Preview mode only). */
     suspend fun enterPreview()
 
+    /** "google.com", "password", or null (Preview / signed out). */
+    fun signInProvider(): String?
+
+    /** Fresh sign-in proof, required by Firebase before deleting or linking an account. */
+    suspend fun reauthenticate(activity: Activity, password: String?)
+
     /** Re-reads the ID token so a freshly granted `adult` claim takes effect. */
     suspend fun refreshClaims(): Boolean
     suspend fun signOut()
@@ -62,7 +68,8 @@ interface ProfileRepository {
 
 interface DiscoveryRepository {
     suspend fun loadDeck(filters: DiscoveryFilters, afterDark: Boolean): List<Profile>
-    suspend fun swipe(target: Profile, direction: SwipeDirection)
+    /** Records the swipe; returns the match id when it made a match, else null. */
+    suspend fun swipe(target: Profile, direction: SwipeDirection): String?
 
     /** True if the swipe was undone. Fails if it already produced a match. */
     suspend fun rewind(targetUid: String): Boolean

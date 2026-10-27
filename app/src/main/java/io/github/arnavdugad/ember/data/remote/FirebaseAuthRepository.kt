@@ -8,6 +8,7 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -63,6 +64,25 @@ class FirebaseAuthRepository @Inject constructor(
     }
 
     override suspend fun signInWithGoogle(activity: Activity) {
+        auth.signInWithCredential(GoogleAuthProvider.getCredential(googleIdToken(activity), null)).await()
+    }
+
+    override fun signInProvider(): String? =
+        auth.currentUser?.providerData?.map { it.providerId }?.firstOrNull { it == "google.com" || it == "password" }
+
+    override suspend fun reauthenticate(activity: Activity, password: String?) {
+        val user = auth.currentUser ?: error("You're signed out.")
+        val credential = if (signInProvider() == "google.com") {
+            GoogleAuthProvider.getCredential(googleIdToken(activity), null)
+        } else {
+            val email = user.email ?: error("This account has no email.")
+            EmailAuthProvider.getCredential(email, password?.takeIf { it.isNotBlank() } ?: error("Enter your password to confirm."))
+        }
+        user.reauthenticate(credential).await()
+    }
+
+    /** Shows the Google account sheet and returns the chosen account's ID token. */
+    private suspend fun googleIdToken(activity: Activity): String {
         val option = GetSignInWithGoogleOption.Builder(webClientId()).build()
         val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
         val credential = CredentialManager.create(activity).getCredential(activity, request).credential
@@ -75,8 +95,7 @@ class FirebaseAuthRepository @Inject constructor(
         check(credential is CustomCredential && credential.type in googleTypes) {
             "Google didn't return an account (got ${credential.type})."
         }
-        val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-        auth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null)).await()
+        return GoogleIdTokenCredential.createFrom(credential.data).idToken
     }
 
     override suspend fun enterPreview() = error("Preview mode is only available without a Firebase project.")

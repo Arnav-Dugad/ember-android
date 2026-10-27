@@ -109,6 +109,9 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     override suspend fun sendPasswordReset(email: String) = unsupported()
     override suspend fun signInWithGoogle(activity: Activity) = unsupported()
 
+    override fun signInProvider(): String? = null
+    override suspend fun reauthenticate(activity: Activity, password: String?) = Unit
+
     override suspend fun refreshClaims(): Boolean = authUser.value?.isAdult == true
 
     override suspend fun signOut() {
@@ -201,10 +204,11 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
             .take(40)
     }
 
-    override suspend fun swipe(target: Profile, direction: SwipeDirection) {
+    override suspend fun swipe(target: Profile, direction: SwipeDirection): String? {
         swipes[target.uid] = direction
-        val person = peopleById[target.uid] ?: return
-        if (direction != SwipeDirection.Nope && person.likesBack) {
+        val person = peopleById[target.uid] ?: return null
+        if (direction == SwipeDirection.Nope || !person.likesBack) return null
+        run {
             delay(350)
             val id = matchId(target.uid)
             matches.update {
@@ -225,6 +229,7 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
                     )
             }
         }
+        return matchId(target.uid)
     }
 
     override suspend fun rewind(targetUid: String): Boolean {

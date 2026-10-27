@@ -62,6 +62,7 @@ class DiscoverViewModel @Inject constructor(
     /** Profiles liked this session, so a new match can be celebrated (not ones from earlier). */
     private val recentLikes = mutableMapOf<String, Profile>()
     private var knownMatches: Set<String>? = null
+    private val celebrated = mutableSetOf<String>()
 
     init {
         viewModelScope.launch {
@@ -79,10 +80,8 @@ class DiscoverViewModel @Inject constructor(
                 val known = knownMatches
                 knownMatches = ids
                 if (known == null) return@collect
-                list.firstOrNull { it.id !in known && it.otherUid in recentLikes }?.let { match ->
-                    _state.update { it.copy(celebration = Celebration(match, recentLikes[match.otherUid])) }
-                    analytics.log("match", "super" to match.superLike)
-                }
+                // A match created by the other person's like (or one we missed) still celebrates.
+                list.firstOrNull { it.id !in known && it.otherUid in recentLikes }?.let { celebrate(it, recentLikes[it.otherUid]) }
             }
         }
     }
@@ -121,9 +120,29 @@ class DiscoverViewModel @Inject constructor(
         if (direction != SwipeDirection.Nope) recentLikes[profile.uid] = profile
         analytics.log("swipe", "direction" to direction.key)
         viewModelScope.launch {
-            runCatching { discovery.swipe(profile, direction) }.onFailure { e ->
+            val result = runCatching { discovery.swipe(profile, direction) }
+            result.onFailure { e ->
                 // Put the card back rather than silently losing a like.
                 _state.update { s -> s.copy(deck = listOf(profile) + s.deck, error = e.message ?: "That swipe didn't go through.") }
+            }
+            // The like itself reports the match, so the celebration never depends on a listener.
+            result.getOrNull()?.let { matchId ->
+                celebrate(
+                    Match(
+                        id = matchId,
+                        otherUid = profile.uid,
+                        otherName = profile.name,
+                        otherPhotoUrl = profile.firstPhoto?.url,
+                        otherBlurHash = profile.firstPhoto?.blurHash,
+                        otherIsDemo = profile.isDemo,
+                        createdAt = java.time.Instant.now(),
+                        lastMessage = null,
+                        myLastRead = null,
+                        otherLastRead = null,
+                        superLike = direction == SwipeDirection.Super,
+                    ),
+                    profile,
+                )
             }
         }
         updateGlow()
@@ -160,6 +179,12 @@ class DiscoverViewModel @Inject constructor(
 
     fun applyFilters(filters: DiscoveryFilters) {
         viewModelScope.launch { settings.setFilters(filters) }
+    }
+
+    private fun celebrate(match: Match, them: Profile?) {
+        if (!celebrated.add(match.id)) return
+        _state.update { it.copy(celebration = Celebration(match, them)) }
+        analytics.log("match", "super" to match.superLike)
     }
 
     fun dismissCelebration() = _state.update { it.copy(celebration = null) }

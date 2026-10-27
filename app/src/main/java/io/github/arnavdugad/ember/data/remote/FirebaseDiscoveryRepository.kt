@@ -57,7 +57,7 @@ class FirebaseDiscoveryRepository @Inject constructor(
             .nearFirst(filters.maxDistanceKm, random)
     }
 
-    override suspend fun swipe(target: Profile, direction: SwipeDirection) {
+    override suspend fun swipe(target: Profile, direction: SwipeDirection): String? {
         val uid = auth.requireUid()
         val batch = db.batch()
         batch.set(
@@ -71,15 +71,15 @@ class FirebaseDiscoveryRepository @Inject constructor(
             )
         }
         batch.commit().await()
-        if (direction != SwipeDirection.Nope) tryMatch(uid, target, direction == SwipeDirection.Super)
+        return if (direction != SwipeDirection.Nope) tryMatch(uid, target, direction == SwipeDirection.Super) else null
     }
 
     /**
      * Creates the match if the rules agree it's mutual. "Permission denied" just means they
      * haven't liked back yet; when they do, their client creates the match instead.
      */
-    private suspend fun tryMatch(uid: String, target: Profile, superLike: Boolean) {
-        val me = users.document(uid).get().await().data?.toProfile(uid) ?: return
+    private suspend fun tryMatch(uid: String, target: Profile, superLike: Boolean): String? {
+        val me = users.document(uid).get().await().data?.toProfile(uid) ?: return null
         val pair = listOf(uid, target.uid).sorted()
         val data = mapOf(
             "users" to pair,
@@ -90,10 +90,13 @@ class FirebaseDiscoveryRepository @Inject constructor(
             "lastMessage" to null,
             "lastRead" to emptyMap<String, Any>(),
         )
-        try {
-            db.collection("matches").document(pair.joinToString("_")).set(data).await()
+        val id = pair.joinToString("_")
+        return try {
+            db.collection("matches").document(id).set(data).await()
+            id
         } catch (e: FirebaseFirestoreException) {
             if (e.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) throw e
+            null
         }
     }
 

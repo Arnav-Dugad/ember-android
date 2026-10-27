@@ -95,11 +95,19 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { auth.signOut() }
     }
 
-    /** Server-side deletion of the profile, photos, matches, messages and albums, then the account. */
-    fun deleteAccount() {
+    val signInProvider: String? get() = auth.signInProvider()
+
+    /**
+     * Confirms identity first (Firebase refuses to delete a login that wasn't used recently),
+     * then deletes the profile, photos, matches, messages and albums, then the login itself.
+     */
+    fun deleteAccount(activity: android.app.Activity, password: String) {
         viewModelScope.launch {
             _account.update { it.copy(deleting = true, error = null) }
-            val result = runCatching { safety.deleteAccount() }
+            val result = runCatching {
+                auth.reauthenticate(activity, password)
+                safety.deleteAccount()
+            }
             _account.update { AccountActionState(deleting = false, error = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't delete your account. Try again." }) }
         }
     }
@@ -183,7 +191,8 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
             visible = deleteOpen,
             deleting = account.deleting,
             error = account.error,
-            onDelete = viewModel::deleteAccount,
+            provider = viewModel.signInProvider,
+            onDelete = { password -> viewModel.deleteAccount(activity, password) },
             onDismiss = { deleteOpen = false },
         )
     }
@@ -204,8 +213,16 @@ private fun SettingsRow(label: String, detail: String? = null, onClick: () -> Un
 }
 
 @Composable
-private fun DeleteAccountSheet(visible: Boolean, deleting: Boolean, error: String?, onDelete: () -> Unit, onDismiss: () -> Unit) {
+private fun DeleteAccountSheet(
+    visible: Boolean,
+    deleting: Boolean,
+    error: String?,
+    provider: String?,
+    onDelete: (password: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     var confirmText by remember(visible) { mutableStateOf("") }
+    var password by remember(visible) { mutableStateOf("") }
     val colors = EmberTheme.colors
     GlassBottomSheet(visible = visible, onDismiss = onDismiss, dismissible = !deleting) {
         Text("Delete your account?", style = EmberTheme.type.headline, color = colors.textPrimary)
@@ -217,9 +234,27 @@ private fun DeleteAccountSheet(visible: Boolean, deleting: Boolean, error: Strin
         )
         Spacer(Modifier.height(16.dp))
         EmberTextField(confirmText, { confirmText = it }, label = "Type DELETE to confirm", placeholder = "DELETE")
+        when (provider) {
+            "password" -> {
+                Spacer(Modifier.height(12.dp))
+                EmberTextField(password, { password = it }, label = "Your password", placeholder = "Password", isPassword = true)
+            }
+            "google.com" -> Text(
+                "You'll confirm with your Google account first.",
+                style = EmberTheme.type.caption,
+                color = colors.textSecondary,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
         error?.let { Text(it, style = EmberTheme.type.caption, color = colors.danger, modifier = Modifier.padding(top = 8.dp)) }
         Spacer(Modifier.height(18.dp))
-        EmberButton("Delete everything", onClick = onDelete, enabled = confirmText.trim() == "DELETE", loading = deleting, modifier = Modifier.fillMaxWidth())
+        EmberButton(
+            "Delete everything",
+            onClick = { onDelete(password) },
+            enabled = confirmText.trim() == "DELETE" && (provider != "password" || password.isNotBlank()),
+            loading = deleting,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(10.dp))
         GlassButton("Keep my account", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
     }
