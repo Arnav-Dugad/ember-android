@@ -1,0 +1,286 @@
+rules_version = '2';
+
+// Ember Firestore rules. The contract is docs/DATA_MODEL.md.
+//
+// Principles:
+//  - Default deny. Every path that is not matched below is closed.
+//  - Reading anyone else's data requires the `adult` custom claim, which only the
+//    completeAgeGate Cloud Function grants after verifying the date of birth.
+//  - Users write only their own documents, and never the fields the server owns
+//    (age, isDemo, createdAt). Matches, blocks, reports and the private account
+//    doc are written only by Cloud Functions (the Admin SDK bypasses rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdult() {
+      return isSignedIn() && request.auth.token.adult == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Sorted uids joined by "_", identical to the server's matchIdOf().
+    function pairId(a, b) {
+      return a < b ? a + '_' + b : b + '_' + a;
+    }
+
+    function isMatched(other) {
+      return exists(/databases/$(database)/documents/matches/$(pairId(request.auth.uid, other)));
+    }
+
+    // True when `uid` has a block doc for the caller. blockUser writes the pair, so this holds
+    // whichever side initiated the block.
+    function isBlockedBy(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)/blocks/$(request.auth.uid));
+    }
+
+    function isParticipant(matchId) {
+      return isAdult()
+        && request.auth.uid in get(/databases/$(database)/documents/matches/$(matchId)).data.users;
+    }
+
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function optionalString(d, field, maxLen) {
+      return !(field in d) || (d[field] is string && d[field].size() <= maxLen);
+    }
+
+    function optionalList(d, field, maxSize) {
+      return !(field in d) || (d[field] is list && d[field].size() <= maxSize);
+    }
+
+    function optionalBool(d, field) {
+      return !(field in d) || d[field] is bool;
+    }
+
+    function optionalTimestamp(d, field) {
+      return !(field in d) || d[field] is timestamp;
+    }
+
+    // Coordinates are stored at two decimal places (about 1 km). Anything finer is rejected so a
+    // client bug can never leak an exact location.
+    function isCoarse(n) {
+      return n is number && math.abs(n * 100 - math.round(n * 100)) < 0.0001;
+    }
+
+    function validProfile(uid, d) {
+      return d.keys().hasOnly([
+          'uid', 'name', 'age', 'gender', 'interestedIn', 'bio', 'photos', 'prompts',
+          'interests', 'vibes', 'lookingFor', 'heightCm', 'city', 'geohash', 'lat', 'lng',
+          'afterDark', 'privateAlbumCount', 'isDemo', 'onboarded', 'createdAt', 'updatedAt',
+          'lastActiveAt'
+        ])
+        && d.uid == uid
+        && (!('name' in d) || (d.name is string && d.name.size() >= 1 && d.name.size() <= 40))
+        && (!('gender' in d) || d.gender in ['woman', 'man', 'nonbinary'])
+        && (!('interestedIn' in d) || (d.interestedIn is list
+              && d.interestedIn.size() <= 3
+              && d.interestedIn.toSet().hasOnly(['woman', 'man', 'nonbinary'])))
+        && optionalString(d, 'bio', 500)
+        && optionalList(d, 'photos', 6)
+        && optionalList(d, 'prompts', 3)
+        && optionalList(d, 'interests', 10)
+        && optionalList(d, 'vibes', 6)
+        && (!('lookingFor' in d) || d.lookingFor in ['casual', 'dating', 'friends', 'exploring'])
+        && (!('heightCm' in d) || d.heightCm == null
+              || (d.heightCm is number && d.heightCm >= 120 && d.heightCm <= 230))
+        && optionalString(d, 'city', 80)
+        && optionalString(d, 'geohash', 5)
+        && (!('lat' in d) || (isCoarse(d.lat) && d.lat >= -90 && d.lat <= 90))
+        && (!('lng' in d) || (isCoarse(d.lng) && d.lng >= -180 && d.lng <= 180))
+        && optionalBool(d, 'afterDark')
+        && optionalBool(d, 'onboarded')
+        && (!('privateAlbumCount' in d) || (d.privateAlbumCount is int
+              && d.privateAlbumCount >= 0 && d.privateAlbumCount <= 12))
+        && optionalTimestamp(d, 'updatedAt')
+        && optionalTimestamp(d, 'lastActiveAt');
+    }
+
+    // ---------- users ----------
+
+    match /users/{uid} {
+      // Owners can always read themselves (onboarding happens before the adult claim exists).
+      allow get: if isOwner(uid) || (isAdult() && !isBlockedBy(uid));
+      // Listing other profiles is the discovery deck's job, done server side.
+      allow list: if false;
+
+      // completeAgeGate normally creates the doc (with age). A client-side create may never
+      // carry server-owned fields.
+      allow create: if isOwner(uid) && isAdult()
+        && validProfile(uid, request.resource.data)
+        && !('age' in request.resource.data)
+        && !('isDemo' in request.resource.data)
+        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == request.time);
+
+      allow update: if isOwner(uid) && isAdult()
+        && validProfile(uid, request.resource.data)
+        && !changed().hasAny(['uid', 'age', 'isDemo'])
+        && (!changed().hasAny(['createdAt'])
+              || (!('createdAt' in resource.data) && request.resource.data.createdAt == request.time));
+
+      allow delete: if false; // deleteAccount does this
+
+      // Boundaries and turn-ons: visible to the owner and to matches only.
+      match /matchOnly/{docId} {
+        allow read: if isOwner(uid) || (isAdult() && docId == 'details' && isMatched(uid));
+        allow write: if isOwner(uid) && isAdult() && docId == 'details'
+          && request.resource.data.keys().hasOnly(['boundaries', 'turnOns', 'updatedAt'])
+          && optionalList(request.resource.data, 'boundaries', 12)
+          && optionalList(request.resource.data, 'turnOns', 12)
+          && optionalTimestamp(request.resource.data, 'updatedAt');
+      }
+
+      // Birth date, terms acceptance, demo flags. Server-written only.
+      match /private/{docId} {
+        allow read: if isOwner(uid);
+        allow write: if false;
+      }
+
+      match /tokens/{token} {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['token', 'platform', 'updatedAt'])
+          && request.resource.data.token == token
+          && request.resource.data.platform == 'android'
+          && request.resource.data.updatedAt is timestamp;
+      }
+
+      match /swipes/{targetId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) && isAdult()
+          && targetId != uid
+          && request.resource.data.keys().hasOnly(['direction', 'createdAt'])
+          && request.resource.data.direction in ['like', 'nope', 'super']
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false; // rewindSwipe does this
+      }
+
+      match /blocks/{targetId} {
+        allow read: if isOwner(uid);
+        allow write: if false; // blockUser / reportUser
+      }
+    }
+
+    // ---------- matches and chat ----------
+
+    match /matches/{matchId} {
+      allow get: if isAdult() && request.auth.uid in resource.data.users;
+      // Queries must be constrained to `users array-contains <me>`.
+      allow list: if isAdult() && request.auth.uid in resource.data.users;
+      allow create, delete: if false; // onSwipeCreated / unmatch
+
+      // A participant may only move their own read marker.
+      allow update: if isAdult()
+        && request.auth.uid in resource.data.users
+        && changed().hasOnly(['lastRead'])
+        && request.resource.data.lastRead is map
+        && request.resource.data.lastRead.diff(resource.data.get('lastRead', {}))
+             .affectedKeys().hasOnly([request.auth.uid])
+        && request.resource.data.lastRead[request.auth.uid] is timestamp
+        && request.resource.data.lastRead[request.auth.uid] <= request.time;
+
+      match /typing/{uid} {
+        allow read: if isParticipant(matchId);
+        allow create, update: if isOwner(uid) && isParticipant(matchId)
+          && request.resource.data.keys().hasOnly(['typing', 'updatedAt'])
+          && request.resource.data.typing is bool
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if isOwner(uid) && isParticipant(matchId);
+      }
+
+      match /messages/{messageId} {
+        allow read: if isParticipant(matchId);
+        allow update, delete: if false; // immutable; unmatch deletes the thread
+
+        allow create: if isParticipant(matchId)
+          && request.resource.data.keys().hasOnly([
+               'senderId', 'type', 'text', 'imagePath', 'imageBlurhash', 'game', 'createdAt'
+             ])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.type in ['text', 'image', 'game']
+          && request.resource.data.get('text', '') is string
+          && request.resource.data.get('text', '').size() <= 2000
+          && (request.resource.data.type != 'text'
+                || request.resource.data.get('text', '').size() >= 1)
+          && (request.resource.data.type != 'image'
+                || request.resource.data.get('imagePath', '') == 'chats/' + matchId + '/' + messageId + '.jpg')
+          && (request.resource.data.type == 'image'
+                || request.resource.data.get('imagePath', null) == null)
+          && (request.resource.data.get('imageBlurhash', null) == null
+                || (request.resource.data.imageBlurhash is string
+                    && request.resource.data.imageBlurhash.size() <= 100))
+          && (request.resource.data.type != 'game'
+                || (request.resource.data.game is map
+                    && request.resource.data.game.keys().hasOnly(['mode', 'prompt'])
+                    && request.resource.data.game.mode in ['truth', 'dare']
+                    && request.resource.data.game.prompt is string
+                    && request.resource.data.game.prompt.size() <= 300))
+          && (request.resource.data.type == 'game'
+                || request.resource.data.get('game', null) == null);
+      }
+    }
+
+    // ---------- private albums ----------
+
+    match /albums/{ownerId} {
+      function accessApproved() {
+        return get(/databases/$(database)/documents/albums/$(ownerId)/access/$(request.auth.uid))
+          .data.status == 'approved';
+      }
+
+      match /photos/{photoId} {
+        allow read: if isOwner(ownerId)
+          || (isAdult()
+              && exists(/databases/$(database)/documents/albums/$(ownerId)/access/$(request.auth.uid))
+              && accessApproved());
+        allow create: if isOwner(ownerId) && isAdult()
+          && request.resource.data.keys().hasOnly(['path', 'createdAt'])
+          && request.resource.data.path == 'private/' + ownerId + '/' + photoId + '.jpg'
+          && request.resource.data.createdAt is timestamp;
+        allow delete: if isOwner(ownerId);
+        allow update: if false;
+      }
+
+      match /access/{viewerId} {
+        allow read: if isOwner(ownerId) || isOwner(viewerId);
+
+        // The viewer asks. Only matches can ask, and a request always starts pending.
+        allow create: if isOwner(viewerId) && isAdult()
+          && viewerId != ownerId
+          && isMatched(ownerId)
+          && request.resource.data.keys().hasOnly(['ownerId', 'viewerId', 'status', 'requestedAt', 'updatedAt'])
+          && request.resource.data.ownerId == ownerId
+          && request.resource.data.viewerId == viewerId
+          && request.resource.data.status == 'pending'
+          && request.resource.data.requestedAt is timestamp
+          && request.resource.data.updatedAt is timestamp;
+
+        // The owner explicitly approves or denies.
+        allow update: if isOwner(ownerId) && isAdult()
+          && isMatched(viewerId)
+          && changed().hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status in ['approved', 'denied']
+          && request.resource.data.updatedAt is timestamp;
+
+        // Either side can revoke at any time.
+        allow delete: if isOwner(ownerId) || isOwner(viewerId);
+      }
+    }
+
+    // ---------- moderation ----------
+
+    match /reports/{reportId} {
+      allow read, write: if false; // reportUser only
+    }
+  }
+}

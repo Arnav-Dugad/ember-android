@@ -1,0 +1,14 @@
+{
+  "parameters": {
+    "hide_demo_profiles": {
+      "defaultValue": { "value": "false" },
+      "description": "Hide all seeded demo profiles from discovery. Flipped automatically by updateDemoVisibility.",
+      "valueType": "BOOLEAN"
+    },
+    "demo_hide_threshold": {
+      "defaultValue": { "value": "500" },
+      "description": "Number of real onboarded users above which demo profiles are hidden.",
+      "valueType": "NUMBER"
+    }
+  }
+}

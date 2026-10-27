@@ -1,0 +1,76 @@
+rules_version = '2';
+
+// Ember Cloud Storage rules. The contract is docs/DATA_MODEL.md.
+//
+// Private albums and chat images are authorised against Firestore on every request
+// (cross-service rules), so revoking album access or unmatching takes effect immediately.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdult() {
+      return isSignedIn() && request.auth.token.adult == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Images only, under 10 MB.
+    function isImageUpload() {
+      return request.resource != null
+        && request.resource.contentType.matches('image/.*')
+        && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    function accessDoc(ownerId) {
+      return /databases/(default)/documents/albums/$(ownerId)/access/$(request.auth.uid);
+    }
+
+    function isApprovedViewer(ownerId) {
+      return isAdult()
+        && firestore.exists(accessDoc(ownerId))
+        && firestore.get(accessDoc(ownerId)).data.status == 'approved';
+    }
+
+    function isMatchParticipant(matchId) {
+      return isAdult()
+        && firestore.exists(/databases/(default)/documents/matches/$(matchId))
+        && request.auth.uid in firestore.get(/databases/(default)/documents/matches/$(matchId)).data.users;
+    }
+
+    // Public profile photos: any verified adult may look; only the owner may change them.
+    match /users/{uid}/photos/{photoId} {
+      allow read: if isAdult() || isOwner(uid);
+      allow create, update: if isOwner(uid) && isAdult() && isImageUpload();
+      allow delete: if isOwner(uid);
+    }
+
+    // Private albums: the owner, plus viewers the owner explicitly approved.
+    match /private/{ownerId}/{photoId} {
+      allow read: if isOwner(ownerId) || isApprovedViewer(ownerId);
+      allow create, update: if isOwner(ownerId) && isAdult() && isImageUpload();
+      allow delete: if isOwner(ownerId);
+    }
+
+    // Chat images: match participants only. Write-once; unmatch deletes them server side.
+    match /chats/{matchId}/{fileName} {
+      allow read: if isMatchParticipant(matchId);
+      allow create: if isMatchParticipant(matchId) && isImageUpload();
+      allow update, delete: if false;
+    }
+
+    // Seeded demo avatars (written by the seed script with the Admin SDK).
+    match /demo/{uid}/{fileName} {
+      allow read: if isAdult();
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
