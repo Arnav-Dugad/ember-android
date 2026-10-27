@@ -18,10 +18,12 @@ A swipe-based dating app for Android with a glassmorphic, Apple-inspired design:
 
 </div>
 
-<!-- Screenshots / GIF: replace these placeholders with real captures. -->
-| Welcome | Discover | It's a match | Chat |
+<!-- Real captures from the release build (Preview mode). Drop a demo GIF at docs/media/demo.gif and link it here. -->
+| Welcome | Discover | Swiping | It's a match |
 |---|---|---|---|
-| ![Welcome](docs/media/welcome.png) | ![Discover](docs/media/discover.png) | ![Match](docs/media/match.png) | ![Chat](docs/media/chat.png) |
+| ![Welcome](docs/media/welcome.webp) | ![Discover](docs/media/discover.webp) | ![Swipe](docs/media/swipe.webp) | ![Match](docs/media/match.webp) |
+| **Profile** | **Matches** | **Truth or Dare** | **Light theme** |
+| ![Profile](docs/media/profile.webp) | ![Matches](docs/media/matches.webp) | ![Chat](docs/media/chat.webp) | ![Light](docs/media/light.webp) |
 
 > **Install:** download the APK from the latest release and open it. Android will ask you to allow installs from your browser or file manager the first time. After that, Ember updates itself: it checks GitHub Releases on launch and once a day, then downloads, verifies and installs new versions.
 
