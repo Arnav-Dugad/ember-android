@@ -114,7 +114,7 @@ class SettingsViewModel @Inject constructor(
 }
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(onBack: () -> Unit, onPrivacy: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
     val activity = LocalActivity.current as ComponentActivity
@@ -153,6 +153,7 @@ fun SettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = hiltViewMo
 
                 Spacer(Modifier.height(8.dp))
                 SectionHeader("Safety")
+                SettingsRow(label = "Privacy", onClick = onPrivacy)
                 SettingsRow(label = "Safety tips") { legal = LegalDoc.Safety }
                 SettingsRow(label = "Community Guidelines") { legal = LegalDoc.Guidelines }
                 SettingsRow(label = "Terms of Service") { legal = LegalDoc.Terms }

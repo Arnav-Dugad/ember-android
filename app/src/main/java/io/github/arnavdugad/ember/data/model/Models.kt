@@ -63,8 +63,15 @@ data class Profile(
     val onboarded: Boolean = false,
     val lat: Double? = null,
     val lng: Double? = null,
+    /** Privacy: show others only the city, never "N km away". */
+    val hideDistance: Boolean = false,
+    /** Privacy: left out of everyone's discovery deck. */
+    val paused: Boolean = false,
 ) {
     val firstPhoto: Photo? get() = photos.firstOrNull()
+
+    /** The distance to show on cards and profiles: null when this person hides it. */
+    val shownDistanceKm: Int? get() = if (hideDistance) null else distanceKm
 }
 
 /** Boundaries and turn-ons: only ever shown to people you've matched with. */

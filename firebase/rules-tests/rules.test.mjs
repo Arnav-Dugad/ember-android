@@ -141,6 +141,27 @@ describe("profiles", () => {
     await assertFails(updateDoc(doc(db(EVE), "users/alice"), { bio: "pwned" }));
   });
 
+  test("privacy switches are optional booleans the owner sets", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideDistance: true, paused: true }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideDistance: false }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { paused: false }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { hideDistance: "yes" }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { paused: 1 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { paused: null }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { paused: true }));
+    // Paused profiles are left out of the deck by the app, but stay readable (matches still see them).
+    await assertSucceeds(getDoc(doc(db(BOB), "users/alice")));
+  });
+
+  test("a new profile may start with the privacy switches", async () => {
+    const fs = db("newbie");
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/newbie/private/account"), { ...adultBirth, termsVersion: "2026-10", termsAcceptedAt: serverTimestamp() });
+    batch.set(doc(fs, "users/newbie"), { uid: "newbie", age: adultAge, onboarded: false, hideDistance: true, paused: false });
+    await assertSucceeds(batch.commit());
+  });
+
   test("blocked users cannot get the blocker", async () => {
     await seed((fs) => setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() }));
     await assertFails(getDoc(doc(db(EVE), "users/alice")));

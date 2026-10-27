@@ -36,6 +36,8 @@ internal fun Map<*, *>.toProfile(uid: String): Profile = Profile(
     onboarded = bool("onboarded"),
     lat = dbl("lat"),
     lng = dbl("lng"),
+    hideDistance = bool("hideDistance"),
+    paused = bool("paused"),
 )
 
 internal fun Map<*, *>.toMatchOnly() = MatchOnlyDetails(boundaries = strings("boundaries"), turnOns = strings("turnOns"))

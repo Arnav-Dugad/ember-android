@@ -53,6 +53,8 @@ Readable (get and list) by any adult. List queries must have `limit <= 300`. Wri
 | `privateAlbumCount` | int | 0 to 12 |
 | `isDemo` | bool | clients may only write `false` or omit it; seeded profiles have `true` |
 | `onboarded` | bool | |
+| `hideDistance` | bool, optional | Privacy switch. When `true`, apps show others only `city`, never "N km away". `lat`/`lng` stay in the doc (city-level) so discovery can still filter by distance |
+| `paused` | bool, optional | Privacy switch. When `true`, the profile is left out of everyone's discovery deck; existing matches and chats carry on |
 | `createdAt`, `updatedAt`, `lastActiveAt` | timestamp | |
 
 ### `images/{imageId}` (public profile photos)
@@ -147,8 +149,16 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
 ## Client-side flows
 
 - **Discovery:** query `users` with `onboarded == true`, ordered by `lastActiveAt` descending,
-  limit 300 (composite index). The client then drops itself, swiped and blocked people, and
-  hidden demos, and filters by age, distance, mutual gender interest, lookingFor and After Dark.
+  limit 300 (composite index). The client then drops itself, swiped, blocked and paused people,
+  and hidden demos, and filters by age, distance, mutual gender interest, lookingFor and After Dark.
+  (`paused` is filtered on the device rather than in the query so the existing index still
+  serves, and so profiles written before the field existed still show up.)
+- **Distance label:** cards and profiles show "N km away" only when the profile's
+  `hideDistance` is not `true`; otherwise just the city.
+- **Download my data:** the app reads everything the signed-in user can read about themselves
+  (login, account doc, profile, match-only details, swipes, blocks, report counters, album
+  photo ids and access, matches and the messages they sent) and saves it as a JSON file through
+  the system file picker. Image bytes are left out; nothing is sent anywhere.
 - **Like:**
   1. Write the swipe and `users/{target}/likedBy/{me}`.
   2. Try to create the match. The rules reject it until the like is mutual (or the target is a

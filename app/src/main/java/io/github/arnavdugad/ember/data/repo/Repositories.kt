@@ -134,3 +134,15 @@ interface SafetyRepository {
     suspend fun report(uid: String, reason: ReportReason, details: String, matchId: String?, alsoBlock: Boolean)
     suspend fun deleteAccount()
 }
+
+/** The Privacy screen's switches and the data export. */
+interface PrivacyRepository {
+    /** True: others see only my city, never "N km away". */
+    suspend fun setHideDistance(hide: Boolean)
+
+    /** True: I'm left out of everyone's discovery deck. Matches and chats carry on. */
+    suspend fun setPaused(paused: Boolean)
+
+    /** Everything Ember stores about me, plus the messages I sent, as pretty-printed JSON. */
+    suspend fun exportMyData(): String
+}

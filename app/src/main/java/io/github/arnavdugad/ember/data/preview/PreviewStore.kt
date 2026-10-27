@@ -44,6 +44,8 @@ internal data class StoredProfile(
     val boundaries: List<String> = emptyList(),
     val turnOns: List<String> = emptyList(),
     val album: List<StoredPhoto> = emptyList(),
+    val hideDistance: Boolean = false,
+    val paused: Boolean = false,
 )
 
 /**
@@ -107,6 +109,8 @@ internal fun StoredProfile.toProfile(uid: String, albumCount: Int) = Profile(
     onboarded = onboarded,
     lat = lat,
     lng = lng,
+    hideDistance = hideDistance,
+    paused = paused,
 )
 
 internal fun StoredProfile.matchOnly() = MatchOnlyDetails(boundaries, turnOns)

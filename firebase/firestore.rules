@@ -152,7 +152,9 @@ service cloud.firestore {
           'uid', 'name', 'age', 'gender', 'interestedIn', 'bio', 'photos', 'prompts',
           'interests', 'vibes', 'lookingFor', 'heightCm', 'city', 'geohash', 'lat', 'lng',
           'afterDark', 'privateAlbumCount', 'isDemo', 'onboarded', 'createdAt', 'updatedAt',
-          'lastActiveAt'
+          'lastActiveAt',
+          // Privacy switches.
+          'hideDistance', 'paused'
         ])
         && d.uid == uid
         && ageMatches(uid, d)
@@ -176,6 +178,8 @@ service cloud.firestore {
         && (!('lng' in d) || (isCoarse(d.lng) && d.lng >= -180 && d.lng <= 180))
         && optionalBool(d, 'afterDark')
         && optionalBool(d, 'onboarded')
+        && optionalBool(d, 'hideDistance')
+        && optionalBool(d, 'paused')
         && (!('privateAlbumCount' in d) || (d.privateAlbumCount is int
               && d.privateAlbumCount >= 0 && d.privateAlbumCount <= 12))
         && optionalTimestamp(d, 'updatedAt')
