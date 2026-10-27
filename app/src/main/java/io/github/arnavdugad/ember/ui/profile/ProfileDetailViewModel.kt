@@ -15,10 +15,12 @@ import io.github.arnavdugad.ember.data.repo.AlbumRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
+import io.github.arnavdugad.ember.ui.matches.UnmatchQueue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -41,6 +43,7 @@ class ProfileDetailViewModel @AssistedInject constructor(
     private val matches: MatchRepository,
     private val albums: AlbumRepository,
     private val safety: SafetyRepository,
+    private val unmatches: UnmatchQueue,
 ) : ViewModel() {
     @AssistedFactory
     interface Factory {
@@ -56,8 +59,10 @@ class ProfileDetailViewModel @AssistedInject constructor(
             _state.update { it.copy(profile = profile, loading = false) }
         }
         viewModelScope.launch {
-            matches.observeMatches().catch { emit(emptyList()) }.collect { list ->
-                val match = list.firstOrNull { it.otherUid == uid }
+            // A match waiting out its Undo window already counts as gone.
+            combine(matches.observeMatches().catch { emit(emptyList()) }, unmatches.pending) { list, pending ->
+                list.firstOrNull { m -> m.otherUid == uid && pending.none { it.matchId == m.id } }
+            }.collect { match ->
                 val wasMatched = _state.value.match != null
                 _state.update { it.copy(match = match) }
                 if (match != null && !wasMatched) {
@@ -84,9 +89,11 @@ class ProfileDetailViewModel @AssistedInject constructor(
 
     fun block() = act(closeAfter = true) { safety.block(uid) }
 
+    /** Hides the match now; the real unmatch waits out the Undo window. */
     fun unmatch() {
-        val matchId = _state.value.match?.id ?: return
-        act(closeAfter = true) { safety.unmatch(matchId) }
+        val match = _state.value.match ?: return
+        unmatches.unmatch(match.id, match.otherName)
+        _state.update { it.copy(removed = true) }
     }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }

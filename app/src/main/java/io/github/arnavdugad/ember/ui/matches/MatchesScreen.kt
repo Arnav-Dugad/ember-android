@@ -1,7 +1,21 @@
 package io.github.arnavdugad.ember.ui.matches
 
+import android.os.SystemClock
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,22 +25,39 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.HeartBroken
+import androidx.compose.material.icons.rounded.Unarchive
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,8 +70,10 @@ import io.github.arnavdugad.ember.core.designsystem.DemoBadge
 import io.github.arnavdugad.ember.core.designsystem.EmberFlame
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
+import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
+import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.ScreenTitle
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.pressable
@@ -49,34 +82,65 @@ import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MessageType
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import io.github.arnavdugad.ember.ui.main.BottomBarSpace
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import javax.inject.Inject
 
 @HiltViewModel
-class MatchesViewModel @Inject constructor(matches: MatchRepository) : ViewModel() {
-    /** Null while the first snapshot loads. */
-    val matches: StateFlow<List<Match>?> = matches.observeMatches()
-        .catch { emit(emptyList()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+class MatchesViewModel @Inject constructor(
+    matches: MatchRepository,
+    private val settings: SettingsRepository,
+    private val unmatches: UnmatchQueue,
+) : ViewModel() {
+    /** Null while the first snapshot loads. Matches waiting out their Undo window are already gone. */
+    val matches: StateFlow<List<Match>?> = combine(matches.observeMatches().catch { emit(emptyList()) }, unmatches.pending) { list, pending ->
+        val leaving = pending.mapTo(HashSet()) { it.matchId }
+        list.filterNot { it.id in leaving }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Archived conversations: a device-local list, the other person is never told. */
+    val archived: StateFlow<Set<String>> = settings.archivedMatches
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     val unreadCount: StateFlow<Int> = this.matches
         .map { list -> list.orEmpty().count { it.hasUnread || it.lastMessage == null } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** The most recent unmatch that can still be undone. */
+    val pendingUnmatch: StateFlow<PendingUnmatch?> = unmatches.pending.map { it.lastOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val unmatchFailures: SharedFlow<String> = unmatches.failures
+
+    fun unmatch(match: Match) = unmatches.unmatch(match.id, match.otherName)
+
+    fun undoUnmatch(matchId: String) = unmatches.undo(matchId)
+
+    fun setArchived(matchId: String, archived: Boolean) {
+        viewModelScope.launch { settings.setArchived(matchId, archived) }
+    }
 }
 
 @Composable
 fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
     val matches by viewModel.matches.collectAsStateWithLifecycle()
-    val colors = EmberTheme.colors
-    val fresh = matches.orEmpty().filter { it.lastMessage == null }
-    val conversations = matches.orEmpty().filter { it.lastMessage != null }
+    val archivedIds by viewModel.archived.collectAsStateWithLifecycle()
+    var archiveOpen by rememberSaveable { mutableStateOf(false) }
+    val all = matches.orEmpty()
+    val archived = all.filter { it.id in archivedIds }
+    val active = all.filterNot { it.id in archivedIds }
+    val fresh = active.filter { it.lastMessage == null }
+    val conversations = active.filter { it.lastMessage != null }
 
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(intensity = 0.7f) }) {
         LazyColumn(
@@ -87,23 +151,150 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
             item { ScreenTitle("Matches", subtitle = "Say something bold. They already like you.") }
             when {
                 matches == null -> items(4) { Box(Modifier.fillMaxWidth().height(76.dp).shimmer(EmberShapes.tile)) }
-                matches!!.isEmpty() -> item { EmptyMatches() }
+                all.isEmpty() -> item { EmptyMatches() }
                 else -> {
                     if (fresh.isNotEmpty()) {
-                        item { SectionHeader("New matches · ${fresh.size}", Modifier.padding(top = 12.dp)) }
-                        item {
+                        item(key = "freshHeader") { SectionHeader("New matches · ${fresh.size}", Modifier.padding(top = 12.dp)) }
+                        item(key = "fresh") {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(vertical = 4.dp)) {
                                 items(fresh, key = { it.id }) { match -> NewMatchBubble(match) { onOpenChat(match.id) } }
                             }
                         }
                     }
                     if (conversations.isNotEmpty()) {
-                        item { SectionHeader("Messages", Modifier.padding(top = 12.dp)) }
-                        items(conversations, key = { it.id }) { match -> ConversationRow(match) { onOpenChat(match.id) } }
+                        item(key = "messagesHeader") { SectionHeader("Messages", Modifier.padding(top = 12.dp)) }
+                        items(conversations, key = { it.id }) { match ->
+                            SwipeActionsRow(
+                                actions = listOf(
+                                    RowAction(Icons.Rounded.Archive, "Archive") { viewModel.setArchived(match.id, true) },
+                                    RowAction(Icons.Rounded.HeartBroken, "Unmatch", danger = true) { viewModel.unmatch(match) },
+                                ),
+                                onClick = { onOpenChat(match.id) },
+                                modifier = Modifier.animateItem(),
+                            ) { ConversationRow(match) }
+                        }
+                    }
+                    if (archived.isNotEmpty()) {
+                        item(key = "archivedHeader") {
+                            ArchivedHeader(
+                                count = archived.size,
+                                unread = archived.any { it.hasUnread },
+                                open = archiveOpen,
+                                onToggle = { archiveOpen = !archiveOpen },
+                                modifier = Modifier.animateItem(),
+                            )
+                        }
+                        if (archiveOpen) {
+                            items(archived, key = { it.id }) { match ->
+                                SwipeActionsRow(
+                                    actions = listOf(
+                                        RowAction(Icons.Rounded.Unarchive, "Unarchive") { viewModel.setArchived(match.id, false) },
+                                        RowAction(Icons.Rounded.HeartBroken, "Unmatch", danger = true) { viewModel.unmatch(match) },
+                                    ),
+                                    onClick = { onOpenChat(match.id) },
+                                    modifier = Modifier.animateItem(),
+                                ) { ConversationRow(match) }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private class RowAction(val icon: ImageVector, val label: String, val danger: Boolean = false, val onClick: () -> Unit)
+
+/**
+ * Swipe a row left to reveal its actions; a tick marks the point where letting go keeps them
+ * open. Tapping an open row closes it instead of opening the chat.
+ */
+@Composable
+private fun SwipeActionsRow(
+    actions: List<RowAction>,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val colors = EmberTheme.colors
+    val haptics = EmberTheme.haptics
+    val scope = rememberCoroutineScope()
+    val reveal = with(LocalDensity.current) { (actions.size * 72).dp.toPx() }
+    val offset = remember { Animatable(0f) }
+    var armed by remember { mutableStateOf(false) }
+    fun settle(open: Boolean) {
+        scope.launch { offset.animateTo(if (open) -reveal else 0f, spring(dampingRatio = 0.8f, stiffness = 500f)) }
+    }
+    Box(modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = (-offset.value / reveal).coerceIn(0f, 1f) },
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            actions.forEach { action ->
+                Column(
+                    Modifier.width(72.dp).pressable(onClick = {
+                        settle(open = false)
+                        action.onClick()
+                    }),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(
+                        Modifier
+                            .size(46.dp)
+                            .background(if (action.danger) colors.danger.copy(alpha = 0.9f) else colors.surfaceHigh, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(action.icon, contentDescription = action.label, tint = if (action.danger) Color.White else colors.textPrimary)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(action.label, style = EmberTheme.type.caption, color = colors.textSecondary)
+                }
+            }
+        }
+        Box(
+            Modifier
+                .graphicsLayer { translationX = offset.value }
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { delta ->
+                        val next = (offset.value + delta).coerceIn(-reveal * 1.15f, 0f)
+                        val nowArmed = next < -reveal / 2
+                        if (nowArmed != armed) {
+                            armed = nowArmed
+                            haptics.tick()
+                        }
+                        scope.launch { offset.snapTo(next) }
+                    },
+                    onDragStopped = { velocity -> settle(open = velocity < -1_200f || (velocity < 1_200f && offset.value < -reveal / 2)) },
+                )
+                .pressable(onClick = { if (offset.value < 0f) settle(open = false) else onClick() }, pressedScale = 0.98f),
+        ) {
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ArchivedHeader(count: Int, unread: Boolean, open: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = EmberTheme.colors
+    val rotation by animateFloatAsState(if (open) 180f else 0f, label = "chevron")
+    Row(
+        modifier.fillMaxWidth().padding(top = 12.dp).pressable(onClick = onToggle, pressedScale = 0.98f),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SectionHeader("Archived · $count", Modifier.weight(1f))
+        if (unread) {
+            Box(Modifier.padding(end = 8.dp).size(8.dp).background(colors.accentBrush, CircleShape))
+        }
+        Icon(
+            Icons.Rounded.ExpandMore,
+            contentDescription = if (open) "Hide archived" else "Show archived",
+            tint = colors.textTertiary,
+            modifier = Modifier.graphicsLayer { rotationZ = rotation },
+        )
     }
 }
 
@@ -111,25 +302,37 @@ fun MatchesScreen(viewModel: MatchesViewModel, onOpenChat: (String) -> Unit) {
 private fun NewMatchBubble(match: Match, onClick: () -> Unit) {
     val colors = EmberTheme.colors
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(78.dp).pressable(onClick = onClick)) {
-        Box(
-            Modifier
-                .size(74.dp)
-                .border(2.5.dp, Brush.sweepGradient(colors.gradient + colors.gradient.first()), CircleShape)
-                .padding(4.dp)
-                .clip(CircleShape),
-        ) {
-            EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
+        Box(contentAlignment = Alignment.BottomCenter) {
+            Box(
+                Modifier
+                    .size(74.dp)
+                    .border(2.5.dp, Brush.sweepGradient(colors.gradient + colors.gradient.first()), CircleShape)
+                    .padding(4.dp)
+                    .clip(CircleShape),
+            ) {
+                EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
+            }
+            Badge("NEW", Modifier.offset(y = 6.dp))
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(10.dp))
         Text(match.otherName, style = EmberTheme.type.caption, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
+/** A small gradient pill: "NEW" on fresh matches, "Your turn" when they wrote last. */
 @Composable
-private fun ConversationRow(match: Match, onClick: () -> Unit) {
+private fun Badge(text: String, modifier: Modifier = Modifier) {
+    Box(modifier.background(EmberTheme.colors.accentHorizontal, PillShape).padding(horizontal = 7.dp, vertical = 2.dp)) {
+        Text(text, style = EmberTheme.type.overline, color = EmberTheme.colors.onAccent)
+    }
+}
+
+@Composable
+private fun ConversationRow(match: Match) {
     val colors = EmberTheme.colors
     val last = match.lastMessage
-    GlassSurface(Modifier.fillMaxWidth().pressable(onClick = onClick, pressedScale = 0.98f), shape = EmberShapes.tile) {
+    val theirTurn = last != null && last.senderId == match.otherUid
+    GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.tile) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(54.dp).clip(CircleShape)) {
                 EmberImage(match.otherPhotoUrl, match.otherBlurHash, contentDescription = match.otherName, modifier = Modifier.fillMaxSize())
@@ -137,22 +340,34 @@ private fun ConversationRow(match: Match, onClick: () -> Unit) {
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(match.otherName, style = EmberTheme.type.titleSmall, color = colors.textPrimary, maxLines = 1)
+                    Text(
+                        match.otherName,
+                        style = EmberTheme.type.titleSmall,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     if (match.otherIsDemo) {
                         Spacer(Modifier.width(8.dp))
                         DemoBadge()
+                    }
+                    if (theirTurn) {
+                        Spacer(Modifier.width(8.dp))
+                        Badge("Your turn")
                     }
                     Spacer(Modifier.weight(1f))
                     Text(relativeTime(last?.sentAt), style = EmberTheme.type.caption, color = colors.textTertiary)
                 }
                 val preview = when (last?.type) {
-                    MessageType.Image -> "📷 Photo"
+                    MessageType.Image -> "📷 " + last.text
                     MessageType.Game -> "🎲 Truth or Dare"
+                    MessageType.Voice -> "🎤 Voice note"
+                    MessageType.Date -> "📅 " + last.text
                     else -> last?.text.orEmpty()
                 }
-                val mine = last?.senderId != match.otherUid
                 Text(
-                    (if (mine) "You: " else "") + preview,
+                    (if (last != null && !theirTurn) "You: " else "") + preview,
                     style = EmberTheme.type.bodySmall,
                     color = if (match.hasUnread) colors.textPrimary else colors.textSecondary,
                     maxLines = 1,
@@ -166,6 +381,75 @@ private fun ConversationRow(match: Match, onClick: () -> Unit) {
         }
     }
 }
+
+/**
+ * "Unmatched Ana · Undo", with a bar that drains over the Undo window. Shown by the main
+ * scaffold so it outlives the chat or profile screen the unmatch came from.
+ */
+@Composable
+fun UnmatchSnackbar(viewModel: MatchesViewModel, modifier: Modifier = Modifier) {
+    val colors = EmberTheme.colors
+    val pending by viewModel.pendingUnmatch.collectAsStateWithLifecycle()
+    var failed by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(viewModel) { viewModel.unmatchFailures.collect { failed = it } }
+    failed?.let {
+        LaunchedEffect(it) {
+            kotlinx.coroutines.delay(3_000)
+            failed = null
+        }
+    }
+    // Keeps the last one on screen while it animates away.
+    val last = remember { arrayOfNulls<PendingUnmatch>(1) }
+    pending?.let { last[0] = it }
+    AnimatedVisibility(
+        visible = pending != null || failed != null,
+        enter = slideInVertically { it } + fadeIn(),
+        exit = slideOutVertically { it } + fadeOut(),
+        modifier = modifier,
+    ) {
+        val shown = last[0]
+        GlassSurface(Modifier.padding(horizontal = 20.dp), shape = EmberShapes.tile, style = GlassDefaults.chrome(), elevated = true) {
+            Column {
+                Row(Modifier.padding(start = 18.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        failed?.let { "Couldn't unmatch $it. Try again." } ?: "Unmatched ${shown?.name.orEmpty()}",
+                        style = EmberTheme.type.bodySmall,
+                        color = if (failed != null) colors.danger else colors.textPrimary,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (failed == null && shown != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Undo",
+                            style = EmberTheme.type.label,
+                            color = colors.accent,
+                            modifier = Modifier.pressable(onClick = { viewModel.undoUnmatch(shown.matchId) }).padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                }
+                if (failed == null && shown != null) {
+                    val drain = remember(shown.matchId) { Animatable(remainingFraction(shown)) }
+                    LaunchedEffect(shown.matchId) {
+                        drain.animateTo(0f, tween((drain.value * UnmatchQueue.WINDOW_MS).toInt(), easing = LinearEasing))
+                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .graphicsLayer {
+                                scaleX = drain.value
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                            }
+                            .background(colors.accentHorizontal),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun remainingFraction(pending: PendingUnmatch): Float =
+    ((pending.deadline - SystemClock.elapsedRealtime()).toFloat() / UnmatchQueue.WINDOW_MS).coerceIn(0f, 1f)
 
 @Composable
 private fun EmptyMatches() {

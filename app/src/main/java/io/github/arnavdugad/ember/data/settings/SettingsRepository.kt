@@ -86,6 +86,16 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
 
     suspend fun setLastNotifiedUpdate(version: String) = store.edit { it[NOTIFIED_VERSION] = version }
 
+    // --- Chat bookkeeping ---
+
+    /** Conversations the user archived. Device-local: the other person never knows. */
+    val archivedMatches: Flow<Set<String>> = store.data.map { it[ARCHIVED_MATCHES].orEmpty() }.distinctUntilChanged()
+
+    suspend fun setArchived(matchId: String, archived: Boolean) = store.edit {
+        val current = it[ARCHIVED_MATCHES].orEmpty()
+        it[ARCHIVED_MATCHES] = if (archived) current + matchId else current - matchId
+    }
+
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
         val AFTER_DARK = booleanPreferencesKey("after_dark")
@@ -98,5 +108,6 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val SNOOZED_VERSION = stringPreferencesKey("update_snoozed_version")
         val SNOOZED_UNTIL = longPreferencesKey("update_snoozed_until")
         val NOTIFIED_VERSION = stringPreferencesKey("update_notified_version")
+        val ARCHIVED_MATCHES = stringSetPreferencesKey("archived_matches")
     }
 }
