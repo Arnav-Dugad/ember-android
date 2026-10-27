@@ -1,5 +1,6 @@
 package io.github.arnavdugad.ember.data.preview
 
+import android.content.Context
 import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.Gender
 import io.github.arnavdugad.ember.data.model.LookingFor
@@ -7,15 +8,55 @@ import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Photo
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ProfilePrompt
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.random.Random
 
+@Serializable
+internal data class Portrait(val file: String, val gender: String)
+
+@Serializable
+internal data class Bios(val openers: List<String>, val closers: List<String>)
+
 /**
- * Demo people for offline Preview mode. Avatars are DiceBear "notionists" illustrations
- * (CC0, generated from a seed): no photos of real people, nothing explicit. Every profile is
- * flagged [Profile.isDemo] and wears a Demo badge.
+ * Copy shared with the Firebase seed script (firebase/seed/shared, packaged as assets), so
+ * Preview profiles read exactly like seeded ones.
+ */
+internal class DemoContent(
+    val answers: Map<String, List<String>>,
+    val bios: Bios,
+    val portraits: List<Portrait>,
+) {
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+
+        fun load(context: Context): DemoContent {
+            fun read(name: String): String? = runCatching { context.assets.open(name).bufferedReader().use { it.readText() } }.getOrNull()
+            val answers = read("answers.json")?.let { text ->
+                (json.parseToJsonElement(text) as JsonObject)
+                    .filterValues { it is JsonArray }
+                    .mapValues { (_, v) -> v.jsonArray.map { it.jsonPrimitive.content } }
+            }.orEmpty()
+            val bios = read("bios.json")?.let { json.decodeFromString<Bios>(it) } ?: Bios(listOf("Here for good chemistry."), listOf("Say hi."))
+            val portraits = read("portraits.json")?.let { json.decodeFromString<List<Portrait>>(it) }.orEmpty()
+            return DemoContent(answers, bios, portraits)
+        }
+    }
+}
+
+/**
+ * Demo people for offline Preview mode. Main photos are AI-generated portraits of people who
+ * don't exist (served from this repository), the rest are DiceBear illustrations. Nobody here is
+ * a real person, and every profile is flagged [Profile.isDemo] and wears a Demo badge.
  */
 internal object DemoData {
     data class DemoPerson(val profile: Profile, val likesBack: Boolean, val matchOnly: MatchOnlyDetails)
+
+    const val PORTRAIT_BASE = "https://cdn.jsdelivr.net/gh/Arnav-Dugad/ember-android@main/firebase/seed/portraits/"
 
     private val womenNames = listOf(
         "Ava", "Maya", "Sofia", "Zara", "Leila", "Nina", "Chloe", "Priya", "Amara", "Isla", "Mei", "Lucia",
@@ -32,41 +73,6 @@ internal object DemoData {
         "Amsterdam", "Mexico City", "Seoul", "Paris", "Chicago", "Los Angeles", "Mumbai",
     )
 
-    private val bios = listOf(
-        "Equal parts golden retriever and night owl. Will steal your fries and your hoodie.",
-        "Here for good chemistry and better playlists. Bonus points if you can make me laugh mid-sip.",
-        "Recovering overthinker, full-time flirt. Let's skip the small talk.",
-        "Looking for a partner in crime for rooftop bars and 2 a.m. dumplings.",
-        "I dance badly but confidently. Swipe right if that's your type.",
-        "Spontaneous trips, strong coffee, stronger opinions about pizza toppings.",
-        "Sunset chaser. Terrible at texting back, great at making plans.",
-        "Ask me about my questionable karaoke record.",
-        "Soft heart, sharp wit, dangerous dimples. Allegedly.",
-        "Fluent in sarcasm and eyebrow raises. Let's see if we vibe.",
-        "Plant parent, vinyl hoarder, chaos coordinator.",
-        "Will plan the date, the playlist and the after-party.",
-        "Bold enough to swipe first. Curious enough to see where it goes.",
-        "Gym in the morning, cocktails at night, balance is everything.",
-        "Here to have fun and keep it honest. Good vibes only, no games.",
-    )
-
-    private val answers = mapOf(
-        "p_guilty_pleasure" to listOf("Reality TV with a glass of wine, judging everyone's choices", "Ordering dessert first", "Singing in the car like it's a sold-out show"),
-        "p_first_date_dare" to listOf("Order for me without asking a single question", "Challenge me to a game of pool, loser buys round two", "Teach me your worst dance move"),
-        "p_flirt_style" to listOf("Aggressively making eye contact, then looking away", "Roasting you until you blush", "Sending songs that say what I won't"),
-        "p_late_night" to listOf("Deep chats about aliens and exes", "Raiding the fridge and pretending I'm on a cooking show", "Probably convincing you to get tacos"),
-        "p_weakness" to listOf("Forearms and good manners", "A deep voice and a terrible pun", "Someone who remembers my coffee order"),
-        "p_perfect_night" to listOf("Rooftop, city lights and a slow walk home", "Dancing until the lights come on", "Takeout, a movie and absolutely no plans"),
-        "p_type" to listOf("Funny, curious, bold", "Kind, chaotic, tall-ish", "Confident but not cocky"),
-        "p_red_flag" to listOf("You argue with the DJ about song choices", "You've never once been on time", "You flirt with the waiter to get extra bread"),
-        "p_chemistry" to listOf("We lose track of time mid-conversation", "The banter writes itself", "You laugh at my worst jokes on purpose"),
-        "p_after_midnight" to listOf("A philosopher with snacks", "Much braver than I should be", "The best dance partner you'll ever have"),
-        "p_two_truths" to listOf("I've been skydiving, I can juggle, I've met a celebrity on a train", "I speak three languages, I hate chocolate, I once won a dance battle"),
-        "p_win_me_over" to listOf("A handwritten note and a cheeky wink", "Matching my energy on the dance floor", "Bringing snacks without being asked"),
-        "p_spice_level" to listOf("Extra hot, in every sense", "Mild on the plate, wild after midnight", "Medium, but I can be persuaded"),
-        "p_whisper" to listOf("I already booked us a table", "Let's skip to dessert", "You pick the next song"),
-    )
-
     private val backgrounds = listOf(
         "ffb38a,ff7aa8", "ffd6a5,ff8fab", "c8b6ff,ffb3c6", "ff9e7a,ffcf99",
         "a0c4ff,ffc6ff", "fbc4ab,f08080", "ffafcc,ffc8dd", "f9c6c9,c9a7eb",
@@ -75,8 +81,11 @@ internal object DemoData {
     fun avatarUrl(seed: String, background: String): String =
         "https://api.dicebear.com/9.x/notionists/svg?seed=$seed&backgroundType=gradientLinear&backgroundColor=$background"
 
-    fun generate(count: Int = 72): List<DemoPerson> {
+    fun generate(content: DemoContent, count: Int = 72): List<DemoPerson> {
         val random = Random(42)
+        val portraitsByGender = content.portraits.groupBy { it.gender }
+        val nextPortrait = mutableMapOf<String, Int>()
+        val answerable = content.answers.keys.filter { Catalog.prompt(it) != null }
         return (0 until count).map { index ->
             val gender = when {
                 index % 10 == 9 -> Gender.NonBinary
@@ -89,12 +98,19 @@ internal object DemoData {
                 Gender.NonBinary -> nonBinaryNames[index / 10 % nonBinaryNames.size]
             }
             val uid = "demo-preview-$index"
-            val photos = (0 until 2 + random.nextInt(3)).map { n ->
-                val seed = "$name$index-$n"
-                Photo(id = "$uid-$n", url = avatarUrl(seed, backgrounds[(index + n) % backgrounds.size]))
+            val illustrated = (0 until 1 + random.nextInt(3)).map { n ->
+                Photo(id = "$uid-$n", url = avatarUrl("$name$index-$n", backgrounds[(index + n) % backgrounds.size]))
             }
-            val prompts = answers.keys.shuffled(random).take(2 + random.nextInt(2)).map { id ->
-                ProfilePrompt(id, Catalog.prompt(id)?.question.orEmpty(), answers.getValue(id).random(random))
+            // Each portrait is used once before any repeats, matched to the profile's gender.
+            val pool = portraitsByGender[gender.key].orEmpty()
+            val portrait = pool.takeIf { it.isNotEmpty() }?.let {
+                val i = nextPortrait.getOrDefault(gender.key, 0)
+                nextPortrait[gender.key] = i + 1
+                it[i % it.size]
+            }
+            val photos = listOfNotNull(portrait?.let { Photo(id = "$uid-p", url = PORTRAIT_BASE + it.file) }) + illustrated
+            val prompts = answerable.shuffled(random).take(2 + random.nextInt(2)).map { id ->
+                ProfilePrompt(id, Catalog.prompt(id)?.question.orEmpty(), content.answers.getValue(id).random(random))
             }
             val lookingFor = LookingFor.entries[random.nextInt(LookingFor.entries.size)]
             val interestedIn = when (random.nextInt(4)) {
@@ -109,7 +125,7 @@ internal object DemoData {
                 age = 21 + random.nextInt(20),
                 gender = gender,
                 interestedIn = interestedIn,
-                bio = bios[random.nextInt(bios.size)],
+                bio = "${content.bios.openers.random(random)} ${content.bios.closers.random(random)}",
                 photos = photos,
                 prompts = prompts,
                 interests = Catalog.interests.shuffled(random).take(3 + random.nextInt(4)),

@@ -16,7 +16,7 @@
 // GOOGLE_APPLICATION_CREDENTIALS. Bucket: --bucket, else <project>.firebasestorage.app.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createAvatar } from "@dicebear/core";
@@ -45,7 +45,10 @@ const WIDTH = 768;
 const HEIGHT = 960;
 
 const PROMPTS = readJson("prompts.json");
-const ANSWERS = readJson("answers.json");
+const ANSWERS = readJson("shared/answers.json");
+const BIOS = readJson("shared/bios.json");
+const BIO_OPENERS = BIOS.openers;
+const BIO_CLOSERS = BIOS.closers;
 const CATALOG = readJson("catalog.json");
 
 // ---------- deterministic randomness ----------
@@ -121,30 +124,6 @@ const CITIES = [
   { city: "Delhi", lat: 28.6139, lng: 77.209 },
 ];
 
-const BIO_OPENERS = [
-  "Part-time adventurer, full-time snack enthusiast.",
-  "Fluent in sarcasm and late-night playlists.",
-  "Looking for someone to split dessert and bad decisions with.",
-  "Equal parts golden retriever and night owl.",
-  "Will absolutely judge you by your coffee order.",
-  "Recovering overthinker, current overplanner.",
-  "I make a mean margarita and an even meaner playlist.",
-  "Weekend wanderer, weekday plant parent.",
-  "My friends say I'm trouble. My mum says I'm a delight.",
-  "Here for good chemistry and better conversation.",
-  "Professional brunch critic, amateur salsa dancer.",
-  "Hopeless romantic with a very hopeful calendar.",
-];
-const BIO_CLOSERS = [
-  "Bonus points if you can make me laugh.",
-  "Tell me your go-to karaoke song.",
-  "First round is on whoever wins the debate.",
-  "Let's skip the small talk.",
-  "Swipe right if you know a good rooftop.",
-  "Be kind, be curious, be a little bit bold.",
-  "Ask me about my last spontaneous trip.",
-  "Open to adventures, big or small.",
-];
 
 // Soft gradients in the Ember palette: plum and midnight into ember orange and rose.
 const PALETTES = [
@@ -316,6 +295,25 @@ function hash(text) {
   return h >>> 0;
 }
 
+/**
+ * AI-generated portraits of people who don't exist (portraits/manifest.json). Each profile's
+ * first photo is a portrait matching its gender, cycling so the set is spread evenly; the rest
+ * stay illustrated.
+ */
+function loadPortraits() {
+  const manifest = join(HERE, "portraits", "manifest.json");
+  if (!existsSync(manifest)) return {};
+  const byGender = {};
+  for (const p of JSON.parse(readFileSync(manifest, "utf8"))) (byGender[p.gender] ??= []).push(p.file);
+  return byGender;
+}
+
+async function portraitPhoto(file) {
+  const jpg = readFileSync(join(HERE, "portraits", file));
+  const { data, info } = await sharp(jpg).resize(32, 40).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { bytes: jpg, blurhash: encodeBlurhash(new Uint8ClampedArray(data), info.width, info.height, 4, 5) };
+}
+
 async function renderPhoto(uid, gender, n) {
   const rng = mulberry32(hash(`${uid}/${n}`));
   const palette = PALETTES[Math.floor(rng() * PALETTES.length)];
@@ -350,11 +348,11 @@ async function initFirebase() {
   return { db: getFirestore(), bucket: getStorage().bucket(), FieldValue, Timestamp, projectId, storageBucket };
 }
 
-async function uploadPhoto(bucket, path, png) {
+async function uploadPhoto(bucket, path, png, contentType = "image/png") {
   const token = randomUUID();
   await bucket.file(path).save(png, {
     resumable: false,
-    contentType: "image/png",
+    contentType,
     metadata: {
       cacheControl: "public, max-age=31536000",
       metadata: { firebaseStorageDownloadTokens: token },
@@ -406,8 +404,15 @@ async function main() {
   // Build every profile (and every photo's random choices) up front, in order, so the output is
   // identical across runs regardless of upload timing.
   const plans = Array.from({ length: COUNT }, (_, i) => buildProfile(i, now));
+  const portraits = loadPortraits();
+  const used = {};
   const renders = [];
   for (const plan of plans) {
+    const pool = portraits[plan.gender] ?? [];
+    if (pool.length) {
+      const i = (used[plan.gender] = (used[plan.gender] ?? -1) + 1);
+      plan.portrait = pool[i % pool.length];
+    }
     for (let n = 0; n < plan.photoCount; n++) renders.push({ plan, n });
   }
 
@@ -416,13 +421,17 @@ async function main() {
   console.log(`${DRY_RUN ? "Rendering" : "Seeding"} ${COUNT} demo profiles (${renders.length} illustrations)...`);
 
   await runPool(renders, Number(args.concurrency) || 6, async ({ plan, n }) => {
-    const { png, blurhash } = await renderPhoto(plan.uid, plan.gender, n);
-    const path = `demo/${plan.uid}/${n}.png`;
-    let url = `file://${join(cacheDir, `${plan.uid}-${n}.png`).replace(/\\/g, "/")}`;
+    const usePortrait = n === 0 && plan.portrait;
+    const { bytes, blurhash } = usePortrait
+      ? await portraitPhoto(plan.portrait)
+      : await renderPhoto(plan.uid, plan.gender, n).then((r) => ({ bytes: r.png, blurhash: r.blurhash }));
+    const ext = usePortrait ? "jpg" : "png";
+    const path = `demo/${plan.uid}/${n}.${ext}`;
+    let url = `file://${join(cacheDir, `${plan.uid}-${n}.${ext}`).split(sep).join("/")}`;
     if (DRY_RUN) {
-      writeFileSync(join(cacheDir, `${plan.uid}-${n}.png`), png);
+      writeFileSync(join(cacheDir, `${plan.uid}-${n}.${ext}`), bytes);
     } else {
-      url = await uploadPhoto(fb.bucket, path, png);
+      url = await uploadPhoto(fb.bucket, path, bytes, usePortrait ? "image/jpeg" : "image/png");
     }
     plan.profile.photos[n] = { id: `${plan.uid}-${n}`, url, path, blurhash };
   });

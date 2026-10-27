@@ -1,6 +1,10 @@
 package io.github.arnavdugad.ember.ui.discover
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
@@ -45,7 +49,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -108,21 +111,35 @@ fun DiscoverScreen(
                 GlassIconButton(Icons.Rounded.Tune, contentDescription = "Filters", onClick = { filtersOpen = true })
             }
             Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                when {
-                    state.deck.isNotEmpty() -> SwipeDeck(
-                        profiles = state.deck,
-                        controller = controller,
-                        onSwiped = viewModel::onSwiped,
-                        onOpen = { profile, index -> onOpenProfile(profile.uid, index) },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    state.loading -> Box(Modifier.fillMaxSize().shimmer(EmberShapes.card))
-                    else -> EmptyDeck(
-                        error = state.error,
-                        afterDark = state.afterDark,
-                        onRetry = viewModel::reload,
-                        onWiden = { filtersOpen = true },
-                    )
+                val phase = when {
+                    state.deck.isNotEmpty() -> DeckPhase.Deck
+                    state.loading -> DeckPhase.Loading
+                    else -> DeckPhase.Empty
+                }
+                // The deck springs up out of the skeleton instead of popping in.
+                AnimatedContent(
+                    targetState = phase,
+                    transitionSpec = {
+                        (fadeIn(tween(260)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = 300f), initialScale = 0.92f)) togetherWith fadeOut(tween(160))
+                    },
+                    label = "deckPhase",
+                ) { current ->
+                    when (current) {
+                        DeckPhase.Deck -> SwipeDeck(
+                            profiles = state.deck,
+                            controller = controller,
+                            onSwiped = viewModel::onSwiped,
+                            onOpen = { profile, index -> onOpenProfile(profile.uid, index) },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        DeckPhase.Loading -> Box(Modifier.fillMaxSize().shimmer(EmberShapes.card))
+                        DeckPhase.Empty -> EmptyDeck(
+                            error = state.error,
+                            afterDark = state.afterDark,
+                            onRetry = viewModel::reload,
+                            onWiden = { filtersOpen = true },
+                        )
+                    }
                 }
             }
             ActionRow(
@@ -188,6 +205,8 @@ fun DiscoverScreen(
     }
 }
 
+private enum class DeckPhase { Loading, Deck, Empty }
+
 @Composable
 private fun AfterDarkPill(enabled: Boolean, onToggle: () -> Unit) {
     val colors = EmberTheme.colors
@@ -242,7 +261,16 @@ private fun ActionButton(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val iconTint by animateColorAsState(if (activation > 0.5f) Color.White else tint, label = "iconTint")
+    // Disabled buttons dim their icon and drop their shadow; fading the whole layer would clip
+    // the shadow into a visible square.
+    val iconTint by animateColorAsState(
+        when {
+            !enabled -> tint.copy(alpha = 0.35f)
+            activation > 0.5f -> Color.White
+            else -> tint
+        },
+        label = "iconTint",
+    )
     Box(
         Modifier
             .size(size)
@@ -251,9 +279,8 @@ private fun ActionButton(
                 scaleX = s
                 scaleY = s
             }
-            .alpha(if (enabled) 1f else 0.4f)
             .pressable(onClick = onClick, enabled = enabled, pressedScale = 0.86f, haptic = false)
-            .glass(CircleShape, GlassDefaults.chrome(), LocalHazeState.current, elevated = true)
+            .glass(CircleShape, GlassDefaults.chrome(), LocalHazeState.current, elevated = enabled)
             .background(tint.copy(alpha = activation), CircleShape),
         contentAlignment = Alignment.Center,
     ) {

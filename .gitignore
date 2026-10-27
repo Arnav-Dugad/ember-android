@@ -31,3 +31,4 @@ firestore-debug.log*
 ui-debug.log*
 firebase/seed/.cache/
 firebase/functions/.env
+firebase/seed/portraits/raw/

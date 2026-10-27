@@ -1,6 +1,10 @@
 package io.github.arnavdugad.ember.ui.auth
 
 import android.app.Activity
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import io.github.arnavdugad.ember.data.preview.DemoContent
+import io.github.arnavdugad.ember.data.preview.DemoData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.credentials.exceptions.GetCredentialCancellationException
@@ -28,7 +32,19 @@ data class AuthUiState(
 )
 
 @HiltViewModel
-class AuthViewModel @Inject constructor(private val auth: AuthRepository) : ViewModel() {
+class AuthViewModel @Inject constructor(
+    private val auth: AuthRepository,
+    @ApplicationContext context: Context,
+) : ViewModel() {
+    /** Three portraits (of people who don't exist) for the welcome hero; empty if none are bundled. */
+    val heroPhotos: List<String> = DemoContent.load(context).portraits.let { all ->
+        listOfNotNull(
+            all.firstOrNull { it.gender == "woman" },
+            all.firstOrNull { it.gender == "man" },
+            all.filter { it.gender == "woman" }.getOrNull(1) ?: all.firstOrNull { it.gender == "nonbinary" },
+        ).map { DemoData.PORTRAIT_BASE + it.file }
+    }
+
     private val _state = MutableStateFlow(AuthUiState())
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 

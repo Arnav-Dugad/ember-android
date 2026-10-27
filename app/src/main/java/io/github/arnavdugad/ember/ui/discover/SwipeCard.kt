@@ -213,6 +213,16 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
     val haptics = EmberTheme.haptics
     var photoIndex by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
+    // Tapping past the first or last photo tilts the card in 3D and springs back: a physical
+    // "that's all" instead of a dead tap.
+    val nudge = remember { Animatable(0f) }
+    fun edge(direction: Float) {
+        haptics.reject()
+        scope.launch {
+            nudge.animateTo(direction * 7f, tween(70))
+            nudge.animateTo(0f, spring(dampingRatio = 0.35f, stiffness = 500f))
+        }
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         with(density) {
             state.width = maxWidth.toPx()
@@ -222,12 +232,20 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
             profile = profile,
             photoIndex = photoIndex,
             onTapLeft = {
-                if (photoIndex > 0) photoIndex-- else haptics.reject()
-                haptics.tick()
+                if (photoIndex > 0) {
+                    photoIndex--
+                    haptics.tick()
+                } else {
+                    edge(-1f)
+                }
             },
             onTapRight = {
-                if (photoIndex < profile.photos.lastIndex) photoIndex++ else haptics.reject()
-                haptics.tick()
+                if (photoIndex < profile.photos.lastIndex) {
+                    photoIndex++
+                    haptics.tick()
+                } else {
+                    edge(1f)
+                }
             },
             onOpen = { onOpen(photoIndex) },
             stamps = { CardStamps(state) },
@@ -270,6 +288,8 @@ private fun TopCard(profile: Profile, state: CardSwipeState, onSwiped: (SwipeDir
                     // it when grabbed at the bottom), the way a held photo pivots in your hand.
                     val sign = if (state.grabbedTop) 1f else -1f
                     rotationZ = (o.x / state.width) * MAX_ROTATION * sign
+                    rotationY = nudge.value
+                    cameraDistance = 14f * this.density
                     transformOrigin = TransformOrigin(0.5f, if (state.grabbedTop) 1.25f else -0.25f)
                 },
         )

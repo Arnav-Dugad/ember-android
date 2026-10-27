@@ -67,7 +67,7 @@ fun ProfileSetupScreen(viewModel: ProfileEditorViewModel = hiltViewModel()) {
                     GlassIconButton(Icons.AutoMirrored.Rounded.Logout, contentDescription = "Sign out", onClick = viewModel::signOut)
                 }
                 Spacer(Modifier.weight(1f))
-                Text("STEP 2 OF 2 · ${stepIndex + 1}/${steps.size}", style = EmberTheme.type.overline, color = colors.textTertiary)
+                Text("YOUR PROFILE · ${stepIndex + 1} OF ${steps.size}", style = EmberTheme.type.overline, color = colors.textTertiary)
             }
             val progress by animateFloatAsState((stepIndex + 1f) / steps.size, spring(dampingRatio = 0.7f, stiffness = 200f), label = "progress")
             Box(

@@ -127,6 +127,14 @@ fun ProfileDetailScreen(
         }
 
         if (fromDeck && profile != null) {
+            // A fade under the floating buttons so prompt text never sits behind them.
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(170.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, colors.background.copy(alpha = 0.92f), colors.background))),
+            )
             Row(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 20.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp),

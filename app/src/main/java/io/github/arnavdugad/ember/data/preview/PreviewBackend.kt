@@ -1,6 +1,8 @@
 package io.github.arnavdugad.ember.data.preview
 
 import android.app.Activity
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import android.net.Uri
 import io.github.arnavdugad.ember.data.model.AccessStatus
 import io.github.arnavdugad.ember.data.model.Ages
@@ -47,7 +49,7 @@ import javax.inject.Singleton
  * message from anyone but the local user.
  */
 @Singleton
-class PreviewBackend @Inject constructor() :
+class PreviewBackend @Inject constructor(@ApplicationContext private val context: Context) :
     AuthRepository,
     ProfileRepository,
     DiscoveryRepository,
@@ -57,8 +59,9 @@ class PreviewBackend @Inject constructor() :
 
     override val mode = BackendMode.Preview
 
-    private val people = DemoData.generate()
-    private val peopleById = people.associateBy { it.profile.uid }
+    // Built on first use (from the deck, off the startup path): it reads the shared demo copy.
+    private val people by lazy { DemoData.generate(DemoContent.load(context)) }
+    private val peopleById by lazy { people.associateBy { it.profile.uid } }
     private val authUser = MutableStateFlow<AuthUser?>(null)
     private val me = MutableStateFlow<Profile?>(null)
     private val myMatchOnly = MutableStateFlow<MatchOnlyDetails?>(null)
@@ -69,12 +72,34 @@ class PreviewBackend @Inject constructor() :
     private val album = MutableStateFlow<List<AlbumPhoto>>(emptyList())
     private val access = MutableStateFlow<Map<String, AccessStatus>>(emptyMap())
     private var myAge = 0
+    private val store = PreviewStore(context)
+    private var stored: StoredProfile? = null
+    private var restored = false
+
+    /** Restores the saved Preview profile once per process. */
+    private suspend fun restore() {
+        if (restored) return
+        restored = true
+        val saved = store.load() ?: return
+        stored = saved
+        myAge = saved.age
+        album.value = saved.album.map { AlbumPhoto(it.id, path = "", url = it.url) }
+        me.value = saved.toProfile(ME, saved.album.size).takeIf { saved.name.isNotBlank() }
+        myMatchOnly.value = saved.matchOnly()
+    }
+
+    private suspend fun persist(block: (StoredProfile) -> StoredProfile) {
+        val next = block(stored ?: StoredProfile(age = myAge))
+        stored = next
+        store.save(next)
+    }
 
     // --- Auth ---
 
     override val user: Flow<AuthUser?> = authUser
 
     override suspend fun enterPreview() {
+        restore()
         authUser.value = AuthUser(ME, email = null, phone = null, isAdult = myAge >= Ages.MINIMUM)
     }
 
@@ -108,42 +133,42 @@ class PreviewBackend @Inject constructor() :
         }
         require(age <= Ages.MAXIMUM) { "Please check your date of birth." }
         myAge = age
+        persist { it.copy(age = age) }
         authUser.update { it?.copy(isAdult = true) }
         return age
     }
 
     override suspend fun saveProfile(draft: ProfileDraft, finishOnboarding: Boolean) {
         delay(300)
-        val current = me.value
-        me.value = Profile(
-            uid = ME,
-            name = draft.name.trim(),
-            age = myAge,
-            gender = draft.gender,
-            interestedIn = draft.interestedIn,
-            bio = draft.bio.trim(),
-            photos = draft.photos,
-            prompts = draft.prompts,
-            interests = draft.interests,
-            vibes = draft.vibes,
-            lookingFor = draft.lookingFor,
-            heightCm = draft.heightCm,
-            city = draft.city,
-            afterDark = draft.afterDark,
-            privateAlbumCount = album.value.size,
-            onboarded = finishOnboarding || current?.onboarded == true,
-            lat = draft.lat,
-            lng = draft.lng,
-        )
+        persist { s ->
+            s.copy(
+                age = myAge,
+                onboarded = finishOnboarding || s.onboarded,
+                name = draft.name.trim(),
+                gender = draft.gender?.key,
+                interestedIn = draft.interestedIn.map { it.key },
+                bio = draft.bio.trim(),
+                photos = draft.photos.map { it.toStored() },
+                prompts = draft.prompts.map { StoredPrompt(it.id, it.question, it.answer) },
+                interests = draft.interests,
+                vibes = draft.vibes,
+                lookingFor = draft.lookingFor.key,
+                heightCm = draft.heightCm,
+                city = draft.city,
+                lat = draft.lat,
+                lng = draft.lng,
+                afterDark = draft.afterDark,
+                boundaries = draft.matchOnly.boundaries,
+                turnOns = draft.matchOnly.turnOns,
+            )
+        }
+        me.value = stored?.toProfile(ME, album.value.size)
         myMatchOnly.value = draft.matchOnly
     }
 
-    override suspend fun uploadPhoto(uri: Uri): Photo {
-        delay(250)
-        return Photo(id = UUID.randomUUID().toString(), url = uri.toString())
-    }
+    override suspend fun uploadPhoto(uri: Uri): Photo = store.copyIn(uri).toPhoto()
 
-    override suspend fun deletePhoto(photo: Photo) = Unit
+    override suspend fun deletePhoto(photo: Photo) = store.delete(photo.url)
 
     override suspend fun getProfile(uid: String): Profile? = if (uid == ME) me.value else peopleById[uid]?.profile
 
@@ -237,12 +262,19 @@ class PreviewBackend @Inject constructor() :
     override fun observeMyAlbum(): Flow<List<AlbumPhoto>> = album
 
     override suspend fun addPhoto(uri: Uri) {
-        album.update { listOf(AlbumPhoto(newId(), path = "", url = uri.toString())) + it }
-        me.update { it?.copy(privateAlbumCount = album.value.size) }
+        val copy = store.copyIn(uri)
+        album.update { listOf(AlbumPhoto(copy.id, path = "", url = copy.url)) + it }
+        saveAlbum()
     }
 
     override suspend fun removePhoto(photo: AlbumPhoto) {
         album.update { list -> list.filterNot { it.id == photo.id } }
+        photo.url?.let { store.delete(it) }
+        saveAlbum()
+    }
+
+    private suspend fun saveAlbum() {
+        persist { s -> s.copy(album = album.value.map { StoredPhoto(it.id, it.url.orEmpty()) }) }
         me.update { it?.copy(privateAlbumCount = album.value.size) }
     }
 
@@ -288,6 +320,8 @@ class PreviewBackend @Inject constructor() :
         album.value = emptyList()
         access.value = emptyMap()
         myAge = 0
+        stored = null
+        store.wipe()
         authUser.value = null
     }
 

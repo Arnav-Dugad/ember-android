@@ -36,7 +36,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -125,16 +125,27 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 110.dp, bottom = 12.dp),
                 // reverseLayout needs bottom alignment, or a short thread hugs the top.
-                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+                verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
             ) {
                 if (typing) item(key = "typing") { TypingBubble() }
                 val list = messages.orEmpty()
                 val lastMineId = list.firstOrNull { it.senderId != m?.otherUid }?.id
-                items(list, key = { it.id }) { message ->
+                itemsIndexed(list, key = { _, it -> it.id }) { index, message ->
                     val mine = message.senderId != m?.otherUid
+                    // The list is newest-first, so the message shown above this one is index + 1.
+                    val previous = list.getOrNull(index + 1)
+                    val gap = if (previous?.createdAt != null && message.createdAt != null) {
+                        java.time.Duration.between(previous.createdAt, message.createdAt)
+                    } else {
+                        null
+                    }
+                    val showTime = previous == null || (gap != null && gap.toMinutes() >= 60)
+                    val grouped = !showTime && previous?.senderId == message.senderId && (gap == null || gap.toMinutes() < 3)
                     MessageBubble(
                         message = message,
                         mine = mine,
+                        timeLabel = if (showTime) message.createdAt?.let(::chatTime) else null,
+                        topGap = if (grouped) 0.dp else 8.dp,
                         revealed = mine || message.id in revealed,
                         onReveal = { revealed += message.id },
                         receipt = if (message.id == lastMineId && m != null) receiptFor(message, m) else null,
@@ -255,9 +266,20 @@ private fun MessageBubble(
     onReveal: () -> Unit,
     receipt: String?,
     modifier: Modifier = Modifier,
+    timeLabel: String? = null,
+    topGap: androidx.compose.ui.unit.Dp = 8.dp,
 ) {
     val colors = EmberTheme.colors
-    Column(modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+    Column(modifier.fillMaxWidth().padding(top = topGap), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
+        if (timeLabel != null) {
+            Text(
+                timeLabel,
+                style = EmberTheme.type.caption,
+                color = colors.textTertiary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 10.dp),
+            )
+        }
         when (message.type) {
             MessageType.Game -> GameBubble(message.game ?: GameCard(GameMode.Truth, message.text), mine)
             MessageType.Image -> ImageBubble(message, revealed, onReveal)
@@ -505,4 +527,17 @@ private fun TruthOrDareSheet(visible: Boolean, draw: (GameMode) -> GameCard, onS
             }
         }
     }
+}
+
+/** "9:41 PM" today, "Tue 9:41 PM" this week, "12 Oct, 9:41 PM" before that. */
+private fun chatTime(instant: java.time.Instant): String {
+    val zone = java.time.ZoneId.systemDefault()
+    val at = instant.atZone(zone)
+    val today = java.time.LocalDate.now(zone)
+    val pattern = when {
+        at.toLocalDate() == today -> "h:mm a"
+        at.toLocalDate().isAfter(today.minusDays(6)) -> "EEE h:mm a"
+        else -> "d MMM, h:mm a"
+    }
+    return at.format(java.time.format.DateTimeFormatter.ofPattern(pattern))
 }

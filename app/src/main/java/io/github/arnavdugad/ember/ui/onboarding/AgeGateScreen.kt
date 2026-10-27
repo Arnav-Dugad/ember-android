@@ -185,6 +185,8 @@ fun AgeGateScreen(viewModel: AgeGateViewModel = hiltViewModel()) {
     }
 }
 
+private val CheckboxShape = io.github.arnavdugad.ember.core.designsystem.SquircleShape(7.dp)
+
 @Composable
 private fun ConsentRow(checked: Boolean, onToggle: () -> Unit, text: String, link: String? = null, onLink: () -> Unit = {}) {
     val colors = EmberTheme.colors
@@ -196,8 +198,8 @@ private fun ConsentRow(checked: Boolean, onToggle: () -> Unit, text: String, lin
         Box(
             Modifier
                 .size(26.dp)
-                .background(fill, EmberShapes.small)
-                .border(1.5.dp, if (checked) colors.accent else colors.textTertiary, EmberShapes.small),
+                .background(fill, CheckboxShape)
+                .border(1.5.dp, if (checked) colors.accent else colors.textTertiary, CheckboxShape),
             contentAlignment = Alignment.Center,
         ) {
             if (checked) Icon(Icons.Rounded.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))

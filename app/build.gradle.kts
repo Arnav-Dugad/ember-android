@@ -111,6 +111,14 @@ if (file("google-services.json").exists()) {
     apply(plugin = libs.plugins.firebase.crashlytics.get().pluginId)
 }
 
+// Demo copy (prompt answers, bios, portrait list) is shared with the Firebase seed script, so
+// Preview mode and seeded profiles read the same files.
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addStaticSourceDirectory(rootProject.file("firebase/seed/shared").absolutePath)
+    }
+}
+
 baselineProfile {
     // Checked in and regenerated deliberately with :app:generateBaselineProfile.
     saveInSrc = true

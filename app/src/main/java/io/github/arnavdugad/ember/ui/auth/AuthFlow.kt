@@ -15,6 +15,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.unit.DpOffset
+import io.github.arnavdugad.ember.core.designsystem.EmberShapes
+import io.github.arnavdugad.ember.core.image.EmberImage
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,6 +102,7 @@ fun AuthFlow(viewModel: AuthViewModel = hiltViewModel()) {
             when (current) {
                 AuthStep.Welcome -> Welcome(
                     preview = viewModel.isPreview,
+                    heroPhotos = viewModel.heroPhotos,
                     state = state,
                     onPreview = viewModel::enterPreview,
                     onGoogle = viewModel::signInWithGoogle,
@@ -113,6 +122,7 @@ fun AuthFlow(viewModel: AuthViewModel = hiltViewModel()) {
 @Composable
 private fun Welcome(
     preview: Boolean,
+    heroPhotos: List<String>,
     state: AuthUiState,
     onPreview: () -> Unit,
     onGoogle: (android.app.Activity) -> Unit,
@@ -131,14 +141,17 @@ private fun Welcome(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.weight(1f))
-        EmberFlame(
-            size = 108.dp,
-            modifier = Modifier.graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
-        )
-        Spacer(Modifier.height(28.dp))
+        Box(contentAlignment = Alignment.BottomCenter) {
+            if (heroPhotos.size == 3) PortraitFan(heroPhotos, Modifier.padding(bottom = 44.dp))
+            EmberFlame(
+                size = if (heroPhotos.size == 3) 84.dp else 108.dp,
+                modifier = Modifier.graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                },
+            )
+        }
+        Spacer(Modifier.height(24.dp))
         Text("Find your", style = EmberTheme.type.display, color = colors.textPrimary)
         GradientText("spark.", style = EmberTheme.type.display)
         Spacer(Modifier.height(14.dp))
@@ -307,4 +320,34 @@ private fun Messages(state: AuthUiState) {
     val message = state.error ?: state.info ?: return
     Spacer(Modifier.size(14.dp))
     Text(message, style = EmberTheme.type.bodySmall, color = if (state.error != null) colors.danger else colors.like)
+}
+
+/**
+ * Three portraits fanned like a hand of cards, each floating on its own slow sine so the stack
+ * breathes. The portraits are AI-generated people who don't exist.
+ */
+@Composable
+private fun PortraitFan(photos: List<String>, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "fan")
+    val t by transition.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(7_000, easing = androidx.compose.animation.core.LinearEasing)), label = "fanTime")
+    Box(modifier.size(width = 320.dp, height = 230.dp), contentAlignment = Alignment.Center) {
+        val cards = listOf(Triple(0, -13f, -92), Triple(2, 13f, 92), Triple(1, 0f, 0))
+        cards.forEach { (index, angle, x) ->
+            Box(
+                Modifier
+                    .size(width = 138.dp, height = 184.dp)
+                    .graphicsLayer {
+                        val phase = t + index * 2.1f
+                        translationX = x.dp.toPx()
+                        translationY = (if (index == 1) -12f else 8f).dp.toPx() + kotlin.math.sin(phase) * 5.dp.toPx()
+                        rotationZ = angle + kotlin.math.sin(phase) * 1.5f
+                    }
+                    .dropShadow(EmberShapes.panel, Shadow(radius = 22.dp, color = Color.Black.copy(alpha = 0.45f), offset = DpOffset(0.dp, 10.dp)))
+                    .clip(EmberShapes.panel)
+                    .border(2.dp, Color.White.copy(alpha = 0.85f), EmberShapes.panel),
+            ) {
+                EmberImage(photos[index], null, contentDescription = null, modifier = Modifier.fillMaxSize())
+            }
+        }
+    }
 }
