@@ -28,6 +28,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,77 +60,81 @@ fun ProfileSetupScreen(viewModel: ProfileEditorViewModel = hiltViewModel()) {
     val last = stepIndex == steps.lastIndex
     BackHandler(enabled = stepIndex > 0) { stepIndex-- }
 
+    val sheets = remember { ProfileSheets() }
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow() }) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-            Row(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (stepIndex > 0) {
-                    GlassIconButton(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", onClick = { stepIndex-- })
-                } else {
-                    GlassIconButton(Icons.AutoMirrored.Rounded.Logout, contentDescription = "Sign out", onClick = viewModel::signOut)
-                }
-                Spacer(Modifier.weight(1f))
-                Text("YOUR PROFILE · ${stepIndex + 1} OF ${steps.size}", style = EmberTheme.type.overline, color = colors.textTertiary)
-            }
-            val progress by animateFloatAsState((stepIndex + 1f) / steps.size, spring(dampingRatio = 0.7f, stiffness = 200f), label = "progress")
-            Box(
-                Modifier
-                    .padding(horizontal = 24.dp)
-                    .fillMaxWidth()
-                    .height(5.dp)
-                    .background(colors.surfaceHigh, PillShape),
-            ) {
-                Box(Modifier.fillMaxWidth(progress).height(5.dp).background(colors.accentHorizontal, PillShape))
-            }
-            AnimatedContent(
-                targetState = stepIndex,
-                transitionSpec = {
-                    val forward = targetState > initialState
-                    (slideInHorizontally(spring(dampingRatio = 0.85f, stiffness = 300f)) { if (forward) it / 2 else -it / 2 } + fadeIn()) togetherWith
-                        (slideOutHorizontally { if (forward) -it / 3 else it / 3 } + fadeOut())
-                },
-                modifier = Modifier.weight(1f),
-                label = "setupStep",
-            ) { index ->
-                val current = steps[index]
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp, vertical = 24.dp),
-                ) {
-                    ScreenTitle(current.title, subtitle = current.subtitle)
-                    Spacer(Modifier.height(26.dp))
-                    when (current) {
-                        SetupStep.Basics -> BasicsSection(state, viewModel)
-                        SetupStep.Photos -> PhotosSection(state, viewModel)
-                        SetupStep.About -> AboutSection(state, viewModel)
-                        SetupStep.Prompts -> PromptsSection(state, viewModel)
-                        SetupStep.Vibes -> VibesSection(state, viewModel)
-                        SetupStep.Intent -> IntentSection(state, viewModel)
-                        SetupStep.Location -> LocationSection(state, viewModel)
+        CompositionLocalProvider(LocalProfileSheets provides sheets) {
+            Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+                Row(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (stepIndex > 0) {
+                        GlassIconButton(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", onClick = { stepIndex-- })
+                    } else {
+                        GlassIconButton(Icons.AutoMirrored.Rounded.Logout, contentDescription = "Sign out", onClick = viewModel::signOut)
                     }
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.weight(1f))
+                    Text("YOUR PROFILE · ${stepIndex + 1} OF ${steps.size}", style = EmberTheme.type.overline, color = colors.textTertiary)
                 }
-            }
-            Column(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val message = stepError ?: state.error
-                if (message != null) Text(message, style = EmberTheme.type.bodySmall, color = colors.danger)
-                EmberButton(
-                    text = if (last) "Start exploring" else "Continue",
-                    loading = state.saving,
-                    onClick = {
-                        val problem = viewModel.stepProblem(step)
-                        if (problem != null) {
-                            haptics.reject()
-                            stepError = problem
-                        } else {
-                            stepError = null
-                            if (last) viewModel.save(finishOnboarding = true) else stepIndex++
-                        }
+                val progress by animateFloatAsState((stepIndex + 1f) / steps.size, spring(dampingRatio = 0.7f, stiffness = 200f), label = "progress")
+                Box(
+                    Modifier
+                        .padding(horizontal = 24.dp)
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .background(colors.surfaceHigh, PillShape),
+                ) {
+                    Box(Modifier.fillMaxWidth(progress).height(5.dp).background(colors.accentHorizontal, PillShape))
+                }
+                AnimatedContent(
+                    targetState = stepIndex,
+                    transitionSpec = {
+                        val forward = targetState > initialState
+                        (slideInHorizontally(spring(dampingRatio = 0.85f, stiffness = 300f)) { if (forward) it / 2 else -it / 2 } + fadeIn()) togetherWith
+                            (slideOutHorizontally { if (forward) -it / 3 else it / 3 } + fadeOut())
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    modifier = Modifier.weight(1f),
+                    label = "setupStep",
+                ) { index ->
+                    val current = steps[index]
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 24.dp, vertical = 24.dp),
+                    ) {
+                        ScreenTitle(current.title, subtitle = current.subtitle)
+                        Spacer(Modifier.height(26.dp))
+                        when (current) {
+                            SetupStep.Basics -> BasicsSection(state, viewModel)
+                            SetupStep.Photos -> PhotosSection(state, viewModel)
+                            SetupStep.About -> AboutSection(state, viewModel)
+                            SetupStep.Prompts -> PromptsSection(state, viewModel)
+                            SetupStep.Vibes -> VibesSection(state, viewModel)
+                            SetupStep.Intent -> IntentSection(state, viewModel)
+                            SetupStep.Location -> LocationSection(state, viewModel)
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
+                Column(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val message = stepError ?: state.error
+                    if (message != null) Text(message, style = EmberTheme.type.bodySmall, color = colors.danger)
+                    EmberButton(
+                        text = if (last) "Start exploring" else "Continue",
+                        loading = state.saving,
+                        onClick = {
+                            val problem = viewModel.stepProblem(step)
+                            if (problem != null) {
+                                haptics.reject()
+                                stepError = problem
+                            } else {
+                                stepError = null
+                                if (last) viewModel.save(finishOnboarding = true) else stepIndex++
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
+        ProfileSectionSheets(state, viewModel, sheets)
     }
 }

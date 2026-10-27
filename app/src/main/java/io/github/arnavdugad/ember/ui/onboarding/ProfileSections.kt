@@ -39,6 +39,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -217,7 +219,7 @@ fun formatHeight(cm: Int): String {
 
 @Composable
 fun PromptsSection(state: EditorState, vm: ProfileEditorViewModel) {
-    var pickerOpen by remember { mutableStateOf(false) }
+    val sheets = LocalProfileSheets.current
     val colors = EmberTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         state.draft.prompts.forEach { prompt ->
@@ -246,18 +248,9 @@ fun PromptsSection(state: EditorState, vm: ProfileEditorViewModel) {
             }
         }
         if (state.draft.prompts.size < EditorState.MAX_PROMPTS) {
-            GlassButton("Add a prompt", onClick = { pickerOpen = true }, icon = Icons.Rounded.Add, modifier = Modifier.fillMaxWidth())
+            GlassButton("Add a prompt", onClick = { sheets.prompts = true }, icon = Icons.Rounded.Add, modifier = Modifier.fillMaxWidth())
         }
     }
-    PromptPickerSheet(
-        visible = pickerOpen,
-        taken = state.draft.prompts.map { it.id }.toSet(),
-        onPick = {
-            vm.addPrompt(it)
-            pickerOpen = false
-        },
-        onDismiss = { pickerOpen = false },
-    )
 }
 
 @Composable
@@ -351,7 +344,7 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) vm.locate()
     }
-    var pickerOpen by remember { mutableStateOf(false) }
+    val sheets = LocalProfileSheets.current
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         EmberButton(
             if (state.draft.lat != null) "Update my city" else "Use my location",
@@ -360,7 +353,7 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
             icon = Icons.Rounded.MyLocation,
             modifier = Modifier.fillMaxWidth(),
         )
-        CityField(city = state.draft.city, onClick = { pickerOpen = true })
+        CityField(city = state.draft.city, onClick = { sheets.city = true })
         Text(
             "Ember uses approximate location (about 1 km), rounds it, and shows only your city and a rough distance.",
             style = EmberTheme.type.caption,
@@ -369,15 +362,42 @@ fun LocationSection(state: EditorState, vm: ProfileEditorViewModel) {
         Spacer(Modifier.height(4.dp))
         AfterDarkOptIn(checked = state.draft.afterDark, onChange = vm::setAfterDark)
     }
+}
+
+/**
+ * Which section sheet is open. Sheets are full-screen overlays, so they can't live inside a
+ * section (that sits in a scrolling column under the screen's bottom button); sections flip these
+ * flags and the screen draws [ProfileSectionSheets] at its root.
+ */
+@Stable
+class ProfileSheets {
+    var prompts by mutableStateOf(false)
+    var city by mutableStateOf(false)
+}
+
+val LocalProfileSheets = staticCompositionLocalOf { ProfileSheets() }
+
+/** The pickers the profile sections open. Call last inside the screen's root box. */
+@Composable
+fun ProfileSectionSheets(state: EditorState, vm: ProfileEditorViewModel, sheets: ProfileSheets) {
+    PromptPickerSheet(
+        visible = sheets.prompts,
+        taken = state.draft.prompts.map { it.id }.toSet(),
+        onPick = {
+            vm.addPrompt(it)
+            sheets.prompts = false
+        },
+        onDismiss = { sheets.prompts = false },
+    )
     CityPickerSheet(
-        visible = pickerOpen,
+        visible = sheets.city,
         title = "Your city",
         subtitle = "Only the city shows on your profile.",
         onPick = {
             vm.setPlace(it)
-            pickerOpen = false
+            sheets.city = false
         },
-        onDismiss = { pickerOpen = false },
+        onDismiss = { sheets.city = false },
         search = vm::searchCities,
     )
 }

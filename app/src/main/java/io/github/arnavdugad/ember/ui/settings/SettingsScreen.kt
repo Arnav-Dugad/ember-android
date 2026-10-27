@@ -362,7 +362,7 @@ fun SettingsScreen(onBack: () -> Unit, onPrivacy: () -> Unit, viewModel: Setting
                     SettingsRow(
                         icon = Icons.Rounded.Notifications,
                         title = "Notifications",
-                        subtitle = "Ember has no push messages; chats update while the app is open. Choose which alerts it may show.",
+                        subtitle = "New messages are checked about every 15 minutes in the background. Choose which alerts Ember may show.",
                         onClick = {
                             val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                 .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)

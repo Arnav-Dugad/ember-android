@@ -42,15 +42,18 @@ That lets anyone try the full UI from the release APK before you set up a Fireba
 
 ## Features
 
-- **Onboarding:** 18+ age gate (enforced server-side; under-18 accounts are disabled and their data deleted), terms and community guidelines acceptance, then a seven-step profile wizard.
-- **Profiles:** up to 6 public photos (EXIF and GPS stripped on upload), bio, cheeky prompts, vibes, interests, height, city-level location only, and what you're looking for.
+- **Onboarding:** 18+ age gate (enforced by security rules: an under-18 birth date can't be saved), terms and community guidelines acceptance, then a seven-step profile wizard with a searchable city picker.
+- **Profiles:** up to 6 public photos (EXIF and GPS stripped on upload), bio, cheeky prompts, vibes, interests, height, a 30-second voice intro, city-level location only, and what you're looking for. A profile-strength meter suggests the next best improvement and throws confetti at 100%.
 - **Match-only details:** boundaries and turn-ons that only your matches can read (enforced by security rules).
-- **Discovery:** physics swipe deck (rotation around the grab point, velocity flings, spring return, LIKE / NOPE / SUPER stamps, stacked cards), rewind, distance, age and intent filters, and server-side geohash queries.
+- **Discovery:** physics swipe deck (rotation around the grab point, velocity flings, spring return, LIKE / NOPE / SUPER stamps, heart burst and nope shake, gyroscope tilt, deal-in animation), rewind, distance, age and intent filters, pull-to-refresh, and swipes that keep working offline.
+- **Today's picks, Free tonight and Travel mode:** five daily picks chosen from shared interests and vibes, a 🌙 badge for people free in the next 6 hours, and "browse from" any city without changing your profile.
+- **Likes you:** a grid of everyone who liked you, frosted until you match.
 - **After Dark:** a darker palette that also limits discovery to people open to casual or adventurous connections.
-- **Matching:** created only by a Cloud Function when likes are mutual. The match screen has flying photos, an ember burst and a spring headline.
-- **Chat:** real-time messages, typing indicator, read receipts, tap-to-reveal image messages, and Truth or Dare cards. Updates arrive in real time while the app is open; the free plan has no server to send push notifications.
+- **Matching:** created only when likes are mutual, checked by security rules. The match screen has flying photos, an ember burst and a spring headline.
+- **Chat:** real-time messages, reactions, replies, view-once photos, voice notes, a date planner built from shared interests, typing indicator, read receipts, Truth or Dare cards, and gentle safety nudges when someone asks for money or to move off the app. Messages sent offline go out when you reconnect, and a background check posts local notifications for new messages.
+- **Matches list:** NEW and "Your turn" badges, swipe to archive or unmatch, and a 10-second undo.
 - **Private album:** photos are invisible until the owner approves a match, and access can be revoked instantly. Security rules check access on every photo read, screenshots are blocked, and viewers see a consent reminder first.
-- **Safety:** block, unmatch, report (8 reasons), private lock-screen notifications, and full account deletion.
+- **Safety and privacy:** block (which also hides you from them), unmatch, report (8 reasons, 20 a day), hide distance, pause your profile, download your data, private lock-screen notifications, and full account deletion.
 - **Design:** Haze backdrop blur with a frosted fallback below Android 12, continuous-curvature corners, Manrope typography, an ambient glow tinted by the current photo (Palette API), and haptics on thresholds, matches and presses.
 - **Self-update:** an in-app updater backed by GitHub Releases. It checks the SHA-256 of each download, plus its package name and signing certificate, before installing. Add `[mandatory]` to the release notes to require an update.
 

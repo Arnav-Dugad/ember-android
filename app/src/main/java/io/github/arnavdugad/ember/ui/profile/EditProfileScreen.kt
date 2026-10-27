@@ -19,6 +19,10 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import io.github.arnavdugad.ember.ui.onboarding.ProfileSheets
+import io.github.arnavdugad.ember.ui.onboarding.ProfileSectionSheets
+import io.github.arnavdugad.ember.ui.onboarding.LocalProfileSheets
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -76,41 +80,45 @@ fun EditProfileScreen(onBack: () -> Unit, initialSection: EditSection? = null, v
         delay(200)
         scroll.animateScrollTo(target.roundToInt())
     }
+    val sheets = remember { ProfileSheets() }
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(intensity = 0.6f) }) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                GlassIconButton(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", onClick = onBack)
-                Spacer(Modifier.width(14.dp))
-                Text("Edit profile", style = EmberTheme.type.title, color = colors.textPrimary)
-            }
-            if (!state.loaded) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = colors.accent) }
-                return@Column
-            }
-            Column(
-                Modifier.weight(1f).onSizeChanged { viewport = it.height }.verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(30.dp),
-            ) {
-                SetupStep.entries.forEach { step ->
-                    Column(Modifier.onGloballyPositioned { bounds[step] = it.positionInParent().y to it.size.height.toFloat() }) {
-                        SectionHeader(step.title)
-                        Spacer(Modifier.padding(top = 12.dp))
-                        when (step) {
-                            SetupStep.Basics -> BasicsSection(state, viewModel)
-                            SetupStep.Photos -> PhotosSection(state, viewModel)
-                            SetupStep.About -> AboutSection(state, viewModel)
-                            SetupStep.Prompts -> PromptsSection(state, viewModel)
-                            SetupStep.Vibes -> VibesSection(state, viewModel)
-                            SetupStep.Intent -> IntentSection(state, viewModel)
-                            SetupStep.Location -> LocationSection(state, viewModel)
+        CompositionLocalProvider(LocalProfileSheets provides sheets) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GlassIconButton(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", onClick = onBack)
+                    Spacer(Modifier.width(14.dp))
+                    Text("Edit profile", style = EmberTheme.type.title, color = colors.textPrimary)
+                }
+                if (!state.loaded) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = colors.accent) }
+                    return@Column
+                }
+                Column(
+                    Modifier.weight(1f).onSizeChanged { viewport = it.height }.verticalScroll(scroll).padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(30.dp),
+                ) {
+                    SetupStep.entries.forEach { step ->
+                        Column(Modifier.onGloballyPositioned { bounds[step] = it.positionInParent().y to it.size.height.toFloat() }) {
+                            SectionHeader(step.title)
+                            Spacer(Modifier.padding(top = 12.dp))
+                            when (step) {
+                                SetupStep.Basics -> BasicsSection(state, viewModel)
+                                SetupStep.Photos -> PhotosSection(state, viewModel)
+                                SetupStep.About -> AboutSection(state, viewModel)
+                                SetupStep.Prompts -> PromptsSection(state, viewModel)
+                                SetupStep.Vibes -> VibesSection(state, viewModel)
+                                SetupStep.Intent -> IntentSection(state, viewModel)
+                                SetupStep.Location -> LocationSection(state, viewModel)
+                            }
                         }
                     }
                 }
-            }
-            Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                state.error?.let { Text(it, style = EmberTheme.type.bodySmall, color = colors.danger, modifier = Modifier.padding(bottom = 8.dp)) }
-                EmberButton("Save", onClick = { viewModel.save(finishOnboarding = false) }, loading = state.saving, modifier = Modifier.fillMaxWidth())
+                Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                    state.error?.let { Text(it, style = EmberTheme.type.bodySmall, color = colors.danger, modifier = Modifier.padding(bottom = 8.dp)) }
+                    EmberButton("Save", onClick = { viewModel.save(finishOnboarding = false) }, loading = state.saving, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
+        ProfileSectionSheets(state, viewModel, sheets)
     }
 }
