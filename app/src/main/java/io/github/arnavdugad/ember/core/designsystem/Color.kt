@@ -91,30 +91,38 @@ internal val AfterDarkColors = NightColors.copy(
     glassRimLight = Color(0x33FFC2E2),
 )
 
+/**
+ * Daylight: warm cream and blush rather than stark white, with a dustier terracotta-to-rose
+ * gradient so the accent reads as warm instead of hot pink. Text colors meet WCAG AA (4.5:1) on
+ * [background], on surface glass and on [surfaceHigh]; white on the button gradient is 3.6:1 to
+ * 5.2:1 (the old one dipped to 2.4:1).
+ */
 internal val DayColors = EmberColors(
     palette = Palette.Day,
-    background = Color(0xFFFFF8F5),
-    backgroundRaised = Color(0xFFFFFFFF),
-    surface = Color(0xFFFFFFFF),
-    surfaceHigh = Color(0xFFF7EDEB),
-    textPrimary = Color(0xFF1E1418),
-    textSecondary = Color(0xFF6E5F66),
-    textTertiary = Color(0xFFA3949A),
-    accent = Color(0xFFF2542D),
-    accentAlt = Color(0xFFE8336F),
-    accentWarm = Color(0xFFF59E0B),
+    background = Color(0xFFFBF3EE),
+    backgroundRaised = Color(0xFFFFF9F5),
+    surface = Color(0xFFFFFBF8),
+    surfaceHigh = Color(0xFFF3E5DF),
+    textPrimary = Color(0xFF2B1F24),
+    textSecondary = Color(0xFF66545B),
+    textTertiary = Color(0xFF766369),
+    accent = Color(0xFFB84F3A),
+    accentAlt = Color(0xFFB5476A),
+    accentWarm = Color(0xFFD98A2B),
     onAccent = Color.White,
-    gradient = listOf(Color(0xFFFF8A3D), Color(0xFFF7504F), Color(0xFFE8336F)),
-    glow = Color(0xFFFF9A7A),
-    glassTint = Color(0x8CFFFFFF),
-    glassFallback = Color(0xF2FFFFFF),
-    glassRimLight = Color(0xCCFFFFFF),
-    glassRimShade = Color(0x14000000),
-    glassShadow = Color(0x26401A2A),
-    divider = Color(0x14000000),
-    like = Color(0xFF16B97A),
-    nope = Color(0xFFF0365A),
-    superLike = Color(0xFF2F86F6),
-    danger = Color(0xFFE11D48),
-    scrim = Color(0x66000000),
+    gradient = listOf(Color(0xFFD06A45), Color(0xFFC8534F), Color(0xFFB5476A)),
+    glow = Color(0xFFF2B49B),
+    // Warm milk glass, a little denser than before so text on it never fights the backdrop.
+    glassTint = Color(0xA8FFF9F5),
+    glassFallback = Color(0xF5FFFAF6),
+    glassRimLight = Color(0xE6FFFFFF),
+    glassRimShade = Color(0x1A6B3F3A),
+    // Soft, warm-brown shadow instead of a grey drop.
+    glassShadow = Color(0x1F6B3A35),
+    divider = Color(0x175A3A40),
+    like = Color(0xFF178A60),
+    nope = Color(0xFFD6455F),
+    superLike = Color(0xFF2F74D0),
+    danger = Color(0xFFBE2F45),
+    scrim = Color(0x662A1A1F),
 )

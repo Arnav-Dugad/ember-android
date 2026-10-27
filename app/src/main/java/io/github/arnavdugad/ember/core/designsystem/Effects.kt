@@ -46,7 +46,7 @@ fun AmbientGlow(modifier: Modifier = Modifier, tint: Color? = null, intensity: F
         animationSpec = infiniteRepeatable(tween(24_000, easing = LinearEasing)),
         label = "phase",
     )
-    val baseAlpha = (if (colors.isDark) 0.42f else 0.30f) * intensity
+    val baseAlpha = (if (colors.isDark) 0.42f else 0.26f) * intensity
     Canvas(modifier.fillMaxSize().background(colors.background)) {
         val w = size.width
         val h = size.height
