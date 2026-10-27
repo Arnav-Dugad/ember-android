@@ -35,6 +35,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDateTime
 import javax.inject.Inject
+import io.github.arnavdugad.ember.data.ai.AiProvider
+import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 
 data class DiscoverState(
     val deck: List<Profile> = emptyList(),
@@ -75,7 +77,12 @@ class DiscoverViewModel @Inject constructor(
     private val location: LocationRepository,
     private val palette: PaletteExtractor,
     private val analytics: Analytics,
+    aiSettings: AiSettingsRepository,
 ) : ViewModel() {
+    /** Who answers for demo profiles, for the match screen's note. */
+    val aiProvider: StateFlow<AiProvider?> = aiSettings.config.map { if (it.ready) it.provider else null }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     private val _state = MutableStateFlow(DiscoverState())
     val state: StateFlow<DiscoverState> = _state.asStateFlow()
 

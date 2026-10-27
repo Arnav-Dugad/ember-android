@@ -326,11 +326,13 @@ fun DiscoverScreen(
         )
 
         val celebration = state.celebration
+        val aiProvider by viewModel.aiProvider.collectAsStateWithLifecycle()
         AnimatedVisibility(celebration != null, enter = fadeIn(), exit = fadeOut()) {
             if (celebration != null) {
                 MatchCelebration(
                     celebration = celebration,
                     myPhotoUrl = myPhoto,
+                    aiProvider = aiProvider,
                     onMessage = {
                         viewModel.dismissCelebration()
                         onOpenChat(celebration.match.id)
