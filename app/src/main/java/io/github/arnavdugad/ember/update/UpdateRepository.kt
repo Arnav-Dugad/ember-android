@@ -231,11 +231,12 @@ class UpdateRepository @Inject constructor(
             // Machine lines, plus GitHub's auto-generated changelog header and compare link.
             .filterNot { line ->
                 val t = line.trim()
-                t.startsWith("sha256:") || t.startsWith("versionCode:") || t.startsWith("**Full Changelog**") || t.startsWith("## What's Changed")
+                t.startsWith("sha256:") || t.startsWith("versionCode:") || t.startsWith("**Full Changelog**") ||
+                    t.startsWith("## What's Changed") || t.startsWith("**[Download", ignoreCase = true)
             }
+            // Bold markers last, so the line filters above still see them.
             .map { it.replace("**", "") }
             .joinToString("\n")
-            .replace(Regex("""\*\*\[Download.*""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\n{3,}"), "\n\n")
             .trim()
             .trimEnd('-')
