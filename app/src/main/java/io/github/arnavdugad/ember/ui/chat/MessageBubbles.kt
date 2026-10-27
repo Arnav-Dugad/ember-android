@@ -1,13 +1,10 @@
 package io.github.arnavdugad.ember.ui.chat
 
 import android.os.Build
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -38,9 +35,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Screenshot
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,11 +51,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -72,6 +74,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -88,6 +99,7 @@ import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.image.rememberBlurHashPainter
+import io.github.arnavdugad.ember.data.model.ChatEvent
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.GameMode
@@ -105,6 +117,8 @@ internal class BubbleActions(
     val onLongPress: (Message, Rect) -> Unit,
     val onReply: (Message) -> Unit,
     val onReact: (Message, String) -> Unit,
+    /** Double-tap: react with a heart. */
+    val onHeart: (Message) -> Unit,
     val onQuoteClick: (String) -> Unit,
     val onOpenViewOnce: (Message) -> Unit,
     val onPlayVoice: (Message) -> Unit,
@@ -121,16 +135,19 @@ internal class BubbleArrivals {
     private val fresh = HashSet<String>()
     private var openedAt = -1L
 
-    /** [ids] newest first, as the list shows them. */
-    fun observe(ids: List<String>, now: Long) {
+    /** [ids] newest first, as the list shows them. Returns how many of them just arrived. */
+    fun observe(ids: List<String>, now: Long): Int {
         if (openedAt < 0) openedAt = now
+        var arrived = 0
         if (now - openedAt >= SETTLE_MS) {
             for (id in ids) {
                 if (id in seen) break
                 fresh += id
+                arrived++
             }
         }
         seen += ids
+        return arrived
     }
 
     /** True once for a message that should pop in; later calls (scrolled back into view) are false. */
@@ -155,12 +172,19 @@ internal fun MessageBubble(
     voice: VoicePlayer,
     actions: BubbleActions,
     modifier: Modifier = Modifier,
+    /** "Today · 9:41 PM": the first message of a day carries the day separator. */
+    dayLabel: String? = null,
     timeLabel: String? = null,
     topGap: Dp = 8.dp,
     morphFromTyping: Boolean = false,
     highlighted: Boolean = false,
     showDateReplies: Boolean = false,
     popIn: Boolean = false,
+    /** In-chat search: occurrences in text bubbles are highlighted. */
+    searchQuery: String? = null,
+    /** The message this one quotes has since been unsent. */
+    quoteUnsent: Boolean = false,
+    reduceMotion: Boolean = false,
 ) {
     val colors = EmberTheme.colors
     val haptics = EmberTheme.haptics
@@ -182,6 +206,24 @@ internal fun MessageBubble(
     LaunchedEffect(Unit) { if (popIn) pop.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 420f)) }
     val trigger = with(density) { 60.dp.toPx() }
     val longPress = { haptics.confirm(); actions.onLongPress(latestMessage, bounds[0]) }
+    // Double-tap: a heart springs up over the bubble and fades as the reaction chip lands.
+    val heartScale = remember { Animatable(0f) }
+    val heartAlpha = remember { Animatable(0f) }
+    var hearting by remember { mutableStateOf(false) }
+    val doubleTap = {
+        haptics.confirm()
+        actions.onHeart(latestMessage)
+        if (!reduceMotion) {
+            scope.launch {
+                hearting = true
+                heartAlpha.snapTo(1f)
+                heartScale.snapTo(0.3f)
+                heartScale.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = 520f))
+                heartAlpha.animateTo(0f, tween(260, delayMillis = 120))
+                hearting = false
+            }
+        }
+    }
 
     Column(
         modifier
@@ -202,8 +244,9 @@ internal fun MessageBubble(
             .padding(top = topGap),
         horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
     ) {
-        if (timeLabel != null) {
-            Text(
+        when {
+            dayLabel != null -> DaySeparator(dayLabel)
+            timeLabel != null -> Text(
                 timeLabel,
                 style = EmberTheme.type.caption,
                 color = colors.textTertiary,
@@ -211,10 +254,19 @@ internal fun MessageBubble(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 10.dp),
             )
         }
+        if (message.type == MessageType.Event) {
+            EventRow(message, mine, otherName)
+            return@Column
+        }
+        if (message.unsent) {
+            UnsentBubble(mine)
+            return@Column
+        }
         message.replyTo?.let { reply ->
             QuotedMessage(
                 reply = reply,
                 author = if (reply.senderId == myUid) "You" else otherName,
+                unsent = quoteUnsent,
                 onClick = { actions.onQuoteClick(reply.id) },
             )
         }
@@ -243,6 +295,15 @@ internal fun MessageBubble(
                         scaleY = pulse.value
                     }
                     .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
+                    // The gestures, spelled out for TalkBack.
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "${if (mine) "You" else otherName}: ${message.summary}"
+                        customActions = listOf(
+                            CustomAccessibilityAction("Reply") { actions.onReply(latestMessage); true },
+                            CustomAccessibilityAction("React with a heart") { actions.onHeart(latestMessage); true },
+                            CustomAccessibilityAction("More options") { longPress(); true },
+                        )
+                    }
                     .pointerInput(message.id) {
                         var total = 0f
                         var armed = false
@@ -268,24 +329,37 @@ internal fun MessageBubble(
                         }
                     }
                     .then(
-                        // Photos handle their own long-press, alongside the tap that reveals them.
+                        // Photos handle their own taps, alongside the one that reveals them.
                         if (message.type == MessageType.Image) {
                             Modifier
                         } else {
-                            Modifier.pointerInput(message.id) { detectTapGestures(onLongPress = { longPress() }) }
+                            Modifier.pointerInput(message.id) { detectTapGestures(onDoubleTap = { doubleTap() }, onLongPress = { longPress() }) }
                         },
                     ),
             ) {
                 when (message.type) {
-                    MessageType.Text -> TextBubble(message.text, mine, morphFromTyping)
+                    MessageType.Text -> TextBubble(message.text, mine, morphFromTyping, searchQuery)
                     MessageType.Image -> if (message.viewOnce) {
                         ViewOnceBubble(message, mine, onOpen = { actions.onOpenViewOnce(message) }, onLongPress = longPress)
                     } else {
-                        ImageBubble(message, revealed, onReveal = { actions.onReveal(message) }, onLongPress = longPress)
+                        ImageBubble(message, revealed, onReveal = { actions.onReveal(message) }, onDoubleTap = doubleTap, onLongPress = longPress)
                     }
                     MessageType.Game -> GameBubble(message.game ?: GameCard(GameMode.Truth, message.text), mine)
                     MessageType.Voice -> VoiceBubble(message, mine, voice, onPlay = { actions.onPlayVoice(message) })
                     MessageType.Date -> DateBubble(message.date ?: DateIdea(message.text, "", "📅"), mine, otherName)
+                    // Handled above; listed so the when stays exhaustive.
+                    MessageType.Event -> Unit
+                }
+                if (hearting) {
+                    Text(
+                        "❤️",
+                        fontSize = 44.sp,
+                        modifier = Modifier.align(Alignment.Center).graphicsLayer {
+                            scaleX = heartScale.value
+                            scaleY = heartScale.value
+                            alpha = heartAlpha.value
+                        },
+                    )
                 }
             }
         }
@@ -323,11 +397,23 @@ private fun Modifier.bubble(mine: Boolean): Modifier = if (mine) {
  * and grows into the text ([SizeTransform]), so the indicator appears to become the message.
  */
 @Composable
-private fun TextBubble(text: String, mine: Boolean, morphFromTyping: Boolean) {
+private fun TextBubble(text: String, mine: Boolean, morphFromTyping: Boolean, searchQuery: String?) {
     val color = if (mine) Color.White else EmberTheme.colors.textPrimary
+    val mark = if (mine) Color.White.copy(alpha = 0.32f) else EmberTheme.colors.accent.copy(alpha = 0.32f)
     Box(Modifier.widthIn(max = 290.dp).bubble(mine).padding(horizontal = 16.dp, vertical = 11.dp)) {
         if (!morphFromTyping) {
-            Text(text, style = EmberTheme.type.body, color = color)
+            val found = if (searchQuery.isNullOrBlank()) emptyList() else ChatSearch.ranges(text, searchQuery)
+            if (found.isEmpty()) {
+                Text(text, style = EmberTheme.type.body, color = color)
+            } else {
+                val marked = remember(text, found, mark) {
+                    buildAnnotatedString {
+                        append(text)
+                        found.forEach { addStyle(SpanStyle(background = mark, fontWeight = FontWeight.SemiBold), it.first, it.last + 1) }
+                    }
+                }
+                Text(marked, style = EmberTheme.type.body, color = color)
+            }
         } else {
             var grown by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) { grown = true }
@@ -345,8 +431,69 @@ private fun TextBubble(text: String, mine: Boolean, morphFromTyping: Boolean) {
     }
 }
 
+/** "Today · 9:41 PM", centred in a small glass pill. */
 @Composable
-private fun QuotedMessage(reply: ReplyRef, author: String, onClick: () -> Unit) {
+private fun DaySeparator(label: String) {
+    Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 10.dp), contentAlignment = Alignment.Center) {
+        Text(
+            label,
+            style = EmberTheme.type.caption,
+            color = EmberTheme.colors.textSecondary,
+            modifier = Modifier
+                .glass(PillShape, GlassDefaults.chrome(), LocalHazeState.current)
+                .padding(horizontal = 12.dp, vertical = 5.dp)
+                .semantics { heading() },
+        )
+    }
+}
+
+/** A centred system row: "Arjun took a screenshot". An unknown event code shows its fallback text. */
+@Composable
+private fun EventRow(message: Message, mine: Boolean, otherName: String) {
+    val colors = EmberTheme.colors
+    val text = when (message.event) {
+        ChatEvent.Screenshot -> if (mine) "You took a screenshot" else "$otherName took a screenshot"
+        null -> message.text
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp).semantics(mergeDescendants = true) {},
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (message.event == ChatEvent.Screenshot) Icons.Rounded.Screenshot else Icons.Rounded.Info,
+            contentDescription = null,
+            tint = colors.textTertiary,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = EmberTheme.type.caption, color = colors.textSecondary)
+    }
+}
+
+/** What's left of an unsent message: an outline, on both sides. */
+@Composable
+private fun UnsentBubble(mine: Boolean) {
+    val colors = EmberTheme.colors
+    Row(
+        Modifier
+            .border(1.dp, colors.divider, EmberShapes.bubble)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
+            .semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Block, contentDescription = null, tint = colors.textTertiary, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            if (mine) "You unsent a message" else Message.UNSENT_TEXT,
+            style = EmberTheme.type.bodySmall.copy(fontStyle = FontStyle.Italic),
+            color = colors.textTertiary,
+        )
+    }
+}
+
+@Composable
+private fun QuotedMessage(reply: ReplyRef, author: String, unsent: Boolean, onClick: () -> Unit) {
     val colors = EmberTheme.colors
     Row(
         Modifier
@@ -361,14 +508,18 @@ private fun QuotedMessage(reply: ReplyRef, author: String, onClick: () -> Unit) 
         Spacer(Modifier.width(8.dp))
         Column {
             Text(author, style = EmberTheme.type.caption, color = colors.accent, maxLines = 1)
-            Text(quoteText(reply), style = EmberTheme.type.bodySmall, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (unsent) {
+                Text(Message.UNSENT_TEXT, style = EmberTheme.type.bodySmall.copy(fontStyle = FontStyle.Italic), color = colors.textTertiary, maxLines = 1)
+            } else {
+                Text(quoteText(reply), style = EmberTheme.type.bodySmall, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
 
 /** A quote's one-line text, with an icon-ish prefix for anything that isn't plain text. */
 internal fun quoteText(reply: ReplyRef): String = when (reply.type) {
-    MessageType.Text -> reply.text
+    MessageType.Text, MessageType.Event -> reply.text
     MessageType.Image -> "📷 " + reply.text
     MessageType.Game -> "🎲 " + reply.text
     MessageType.Voice -> "🎤 " + reply.text
@@ -432,11 +583,12 @@ private fun QuickReplyPill(text: String, primary: Boolean, onClick: () -> Unit) 
 }
 
 /**
- * Images arrive veiled: a BlurHash (no real pixels) until the recipient chooses to look. Below
+ * A veiled image shows a BlurHash (no real pixels) until the recipient chooses to look. Below
  * Android 12, where a real-time blur isn't available, a hash-less image stays fully hidden.
+ * Which photos arrive veiled is the chat's call: see [veilsPhoto].
  */
 @Composable
-private fun ImageBubble(message: Message, revealed: Boolean, onReveal: () -> Unit, onLongPress: () -> Unit) {
+private fun ImageBubble(message: Message, revealed: Boolean, onReveal: () -> Unit, onDoubleTap: () -> Unit, onLongPress: () -> Unit) {
     val colors = EmberTheme.colors
     val placeholder = rememberBlurHashPainter(message.imageBlurHash)
     Box(
@@ -444,7 +596,14 @@ private fun ImageBubble(message: Message, revealed: Boolean, onReveal: () -> Uni
             .size(width = 220.dp, height = 280.dp)
             .clip(EmberShapes.bubble)
             .background(colors.surfaceHigh)
-            .combinedClickable(interactionSource = null, indication = null, onLongClick = onLongPress, onClick = { if (!revealed) onReveal() }),
+            .combinedClickable(
+                interactionSource = null,
+                indication = null,
+                onClickLabel = if (revealed) null else "Show photo",
+                onLongClick = onLongPress,
+                onDoubleClick = onDoubleTap,
+                onClick = { if (!revealed) onReveal() },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         AnimatedContent(targetState = revealed, transitionSpec = { fadeIn(tween(400)) togetherWith fadeOut(tween(200)) }, label = "reveal") { show ->
@@ -461,7 +620,7 @@ private fun ImageBubble(message: Message, revealed: Boolean, onReveal: () -> Uni
             }
         }
         if (!revealed) {
-            OverPhotoLabel(Icons.Rounded.Visibility, "Tap to reveal")
+            OverPhotoLabel(Icons.Rounded.VisibilityOff, "May be sensitive", subtitle = "Tap to view")
         }
         if (message.imageUrl == null && revealed) CircularProgressIndicator(color = colors.accent)
     }
@@ -516,14 +675,17 @@ private fun ViewOnceBubble(message: Message, mine: Boolean, onOpen: () -> Unit, 
 }
 
 @Composable
-private fun OverPhotoLabel(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+private fun OverPhotoLabel(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, subtitle: String? = null) {
     Row(
         Modifier.glass(PillShape, GlassDefaults.overPhoto(), LocalHazeState.current).padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
-        Text(text, style = EmberTheme.type.caption, color = Color.White)
+        Column {
+            Text(text, style = EmberTheme.type.caption, color = Color.White)
+            if (subtitle != null) Text(subtitle, style = EmberTheme.type.caption, color = Color.White.copy(alpha = 0.75f))
+        }
     }
 }
 
@@ -640,31 +802,47 @@ internal fun formatDuration(ms: Long): String {
     return "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
 }
 
+/** [startedAt] (uptime millis): when they started typing, so the dots can quicken as they go. */
 @Composable
-internal fun TypingBubble(modifier: Modifier = Modifier) {
+internal fun TypingBubble(modifier: Modifier = Modifier, startedAt: Long? = null, still: Boolean = false) {
     TypingDots(
         modifier
             .glass(EmberShapes.bubble, GlassDefaults.surface(), LocalHazeState.current)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .semantics { contentDescription = "Typing" },
+        startedAt = startedAt,
+        still = still,
     )
 }
 
+/**
+ * Three dots that breathe: each rises and settles in turn, and the rhythm speeds up the longer
+ * the other person keeps typing ([typingCycleMs]). The phase is only read while drawing, so a
+ * frame redraws three layers and recomposes nothing. [still]: reduced motion, the dots just sit.
+ */
 @Composable
-private fun TypingDots(modifier: Modifier = Modifier) {
+private fun TypingDots(modifier: Modifier = Modifier, startedAt: Long? = null, still: Boolean = false) {
     val colors = EmberTheme.colors
-    val transition = rememberInfiniteTransition(label = "typing")
+    var phase by remember { mutableFloatStateOf(0f) }
+    if (!still) {
+        LaunchedEffect(startedAt) {
+            var last = withFrameNanos { it }
+            while (true) {
+                withFrameNanos { now ->
+                    val typingFor = if (startedAt == null) 0L else SystemClock.uptimeMillis() - startedAt
+                    phase = (phase + (now - last) / 1_000_000f / typingCycleMs(typingFor)) % 1f
+                    last = now
+                }
+            }
+        }
+    }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         repeat(3) { i ->
-            val lift by transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(tween(420, delayMillis = i * 140), RepeatMode.Reverse),
-                label = "dot$i",
-            )
             Box(
                 Modifier
                     .size(8.dp)
                     .graphicsLayer {
+                        val lift = if (still) 0.5f else dotLift(phase, i)
                         translationY = -lift * 5.dp.toPx()
                         alpha = 0.45f + lift * 0.55f
                     }

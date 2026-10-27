@@ -12,6 +12,7 @@ import io.github.arnavdugad.ember.data.model.Ages
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
 import io.github.arnavdugad.ember.data.model.AuthUser
+import io.github.arnavdugad.ember.data.model.ChatEvent
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
@@ -355,6 +356,26 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     }
 
     override suspend fun markRead(matchId: String) = Unit
+
+    /** The same tombstone the Firebase rules allow, and the preview follows if it was the latest. */
+    override suspend fun unsend(matchId: String, message: Message) {
+        check(message.canUnsend(ME, Instant.now())) { "It's been more than 15 minutes, so this one can't be unsent." }
+        updateMessage(matchId, message.id) {
+            Message(it.id, ME, MessageType.Text, Message.UNSENT_TEXT, createdAt = it.createdAt, unsentAt = Instant.now())
+        }
+        message.audioId?.let { id -> withContext(Dispatchers.IO) { voiceFileFor(id).delete() } }
+        matches.update { all ->
+            val match = all[matchId] ?: return@update all
+            val last = match.lastMessage?.takeIf { it.senderId == ME && it.sentAt == message.createdAt } ?: return@update all
+            all + (matchId to match.copy(lastMessage = last.copy(text = Message.UNSENT_TEXT, type = MessageType.Text)))
+        }
+    }
+
+    /** Event rows never become the chat's preview. */
+    override suspend fun sendEvent(matchId: String, event: ChatEvent) = messages.update {
+        val row = Message(newId(), ME, MessageType.Event, event.fallback, createdAt = Instant.now(), event = event)
+        it + (matchId to (listOf(row) + it[matchId].orEmpty()))
+    }
 
     private fun voiceFileFor(id: String) = File(context.filesDir, "preview/voice/$id.m4a")
 

@@ -2,6 +2,7 @@ package io.github.arnavdugad.ember.data.model
 
 import androidx.compose.runtime.Immutable
 import java.io.File
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 
@@ -171,10 +172,26 @@ enum class MessageType(val key: String) {
     Game("game"),
     Voice("voice"),
     Date("date"),
+
+    /** A centred system row ("Arjun took a screenshot"), never typed by anyone. See [ChatEvent]. */
+    Event("event"),
     ;
 
     companion object {
         fun of(key: String?) = entries.firstOrNull { it.key == key } ?: Text
+    }
+}
+
+/**
+ * What an [MessageType.Event] row records. The security rules hold the same codes and pin each
+ * one's [fallback] text, which is what app versions that predate event rows show instead.
+ */
+enum class ChatEvent(val code: String, val fallback: String) {
+    Screenshot("screenshot", "Took a screenshot of the chat"),
+    ;
+
+    companion object {
+        fun of(code: String?): ChatEvent? = entries.firstOrNull { it.code == code }
     }
 }
 
@@ -238,16 +255,36 @@ data class Message(
     val audioId: String? = null,
     val durationMs: Long = 0,
     val date: DateIdea? = null,
+    /** Set for [MessageType.Event] rows; null for an event code this version doesn't know. */
+    val event: ChatEvent? = null,
+    /** When the sender unsent it. The message is then a tombstone carrying [UNSENT_TEXT]. */
+    val unsentAt: Instant? = null,
 ) {
+    val unsent: Boolean get() = unsentAt != null
+
+    /** Whether [myUid] may still unsend this: their own, delivered, and under [UNSEND_WINDOW] old. */
+    fun canUnsend(myUid: String, now: Instant): Boolean {
+        val sent = createdAt ?: return false
+        return senderId == myUid && !pending && !unsent && type != MessageType.Event && now.isBefore(sent.plus(UNSEND_WINDOW))
+    }
+
     /** One line describing the message, for quotes, previews and notifications. */
     val summary: String
         get() = when (type) {
-            MessageType.Text -> text
+            MessageType.Text, MessageType.Event -> text
             MessageType.Image -> if (viewOnce) "View-once photo" else text.ifBlank { "Photo" }
             MessageType.Game -> game?.prompt ?: text
             MessageType.Voice -> "Voice note"
             MessageType.Date -> date?.title ?: text
         }
+
+    companion object {
+        /** The security rules allow unsending for exactly this long after `createdAt`. */
+        val UNSEND_WINDOW: Duration = Duration.ofMinutes(15)
+
+        /** What a tombstone says; the rules pin it, and older app versions show it as plain text. */
+        const val UNSENT_TEXT = "Message unsent"
+    }
 }
 
 enum class AccessStatus(val key: String) {

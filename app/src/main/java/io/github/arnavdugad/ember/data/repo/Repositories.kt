@@ -7,6 +7,7 @@ import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
 import io.github.arnavdugad.ember.data.model.AuthUser
+import io.github.arnavdugad.ember.data.model.ChatEvent
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
@@ -162,7 +163,21 @@ interface MatchRepository {
 
     /** A playable local copy of a voice note, downloaded on first use. */
     suspend fun voiceFile(matchId: String, message: Message): File
+
+    /**
+     * Moves my read marker to now. In a chat with read receipts off the marker stays on this
+     * phone, so my unread badges still clear but the other person never sees "Read".
+     */
     suspend fun markRead(matchId: String)
+
+    /**
+     * Turns my own message into a "Message unsent" tombstone, within [Message.UNSEND_WINDOW] of
+     * sending, and deletes its photo or voice note. Needs a connection.
+     */
+    suspend fun unsend(matchId: String, message: Message)
+
+    /** Posts an event row, e.g. that I took a screenshot. It never becomes the chat's preview. */
+    suspend fun sendEvent(matchId: String, event: ChatEvent)
 }
 
 interface AlbumRepository {
