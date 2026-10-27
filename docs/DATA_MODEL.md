@@ -87,7 +87,7 @@ may also delete it (rewind, account deletion). **Nobody can read these docs**; r
 | `createdAt` | timestamp | `== request.time` |
 | `superLike` | bool | |
 | `isDemo` | bool | |
-| `lastMessage` | `{text, senderId, type, sentAt}` or null | |
+| `lastMessage` | `{text, senderId, type, sentAt}` or null | `type` as for messages |
 | `lastRead` | map uid -> timestamp | |
 
 - **Create:** a participant may create it, with `lastMessage == null` and `lastRead == {}`, only if:
@@ -100,14 +100,45 @@ may also delete it (rewind, account deletion). **Nobody can read these docs**; r
 - **Read:** participants only.
 
 ### `matches/{matchId}/messages/{messageId}`
-`{ senderId == auth.uid, type: "text"|"image"|"game", text (<= 2000), imageId (null unless image),
-imageBlurhash, game: {mode, prompt} or null, createdAt == request.time }`.
-- **Create:** participants, while the match exists and neither has blocked the other.
+| field | type | notes |
+|---|---|---|
+| `senderId` | string | `== auth.uid` |
+| `type` | string | `text`, `image`, `game`, `voice`, `date` |
+| `text` | string | at most 2000; at least 1 for `text`. Images may carry a caption, dates carry the title |
+| `imageId` | string or null | required for `image` (the image doc must exist after the write), null otherwise |
+| `imageBlurhash` | string or null | at most 100 chars |
+| `game` | `{mode: "truth"\|"dare", prompt (<= 300)}` or null | required for `game`, null otherwise |
+| `viewOnce` | bool, optional | `image` only. The recipient opens it once, then deletes the image doc |
+| `viewedAt` | timestamp, optional | never written on create; see updates |
+| `audioId` | string or null | required for `voice` (the audio doc must exist after the write), null otherwise |
+| `durationMs` | int or null | `voice` only, 1 to 61000 |
+| `date` | `{title (1..80), detail (<= 200), emoji (<= 16)}` or null | required for `date`, null otherwise |
+| `replyTo` | `{id, senderId, text (<= 120), type}` or null, optional | `senderId` is one of the match's users |
+| `reactions` | map uid -> emoji, optional | never written on create; see updates |
+| `createdAt` | timestamp | `== request.time` |
+
+- **Create:** participants, while the match exists and neither has blocked the other. Unknown
+  fields are rejected.
 - **Read:** participants.
-- **Delete:** participants (unmatch cleanup). No updates.
+- **Update:** exactly one of:
+  - **React:** a participant changes only `reactions.{self}` (set to one of 🔥 ❤️ 😂 😮 👍, or
+    delete it), while neither has blocked the other.
+  - **Open a view-once photo:** the recipient (not the sender) of a `viewOnce` message sets
+    `viewedAt == request.time`, once. In the same batch they delete the image doc.
+- **Delete:** participants (unmatch cleanup).
+
+Sending never waits for the network: the client commits the batch (message plus the match's
+`lastMessage`) into Firestore's offline cache and shows "Sending…" while the snapshot reports
+`hasPendingWrites`. Photo and voice uploads need a connection.
 
 ### `matches/{matchId}/images/{imageId}`
-`{ owner == auth.uid, data: bytes (<= 900 KB), createdAt }`. Participants create, read and delete.
+`{ owner == auth.uid, data: bytes (<= 900 KB), createdAt }`. Participants create, read and delete
+(the recipient of a view-once photo deletes it after viewing).
+
+### `matches/{matchId}/audio/{audioId}`
+`{ owner == auth.uid, data: bytes (AAC in MPEG-4, <= 900 KB), createdAt == request.time,
+durationMs: int (1 to 61000) }`. Participants create, read and delete. No updates. A voice note
+is at most 60 s of mono 24 kHz AAC at about 32 kbps, roughly 240 KB.
 
 ### `matches/{matchId}/typing/{uid}`
 `{ typing: bool, updatedAt == request.time }`. Participants read; each writes and deletes only their own.
@@ -139,7 +170,9 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
   2. Try to create the match. The rules reject it until the like is mutual (or the target is a
      demo that likes back), so a permission error here just means "no match yet".
   3. When the other person likes back, their client creates the match.
-- **Unmatch:** delete the messages, chat images, typing docs and match doc, plus album access both ways.
+- **Unmatch:** delete the messages, chat images, voice notes, typing docs and match doc, plus
+  album access both ways. The app hides the conversation at once and waits 10 s (an Undo
+  window) before deleting anything; if the app is killed in that window, nothing is deleted.
 - **Block:** write the block doc, then unmatch.
 - **Delete account:** client-side deletes of everything the user owns or created (see
   `FirebaseSafetyRepository`), then `FirebaseUser.delete()`. Reports are kept.

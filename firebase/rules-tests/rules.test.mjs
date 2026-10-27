@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { assertFails, assertSucceeds, initializeTestEnvironment } from "@firebase/rules-unit-testing";
 import {
-  Bytes, collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc,
+  Bytes, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc,
   updateDoc, where, writeBatch,
 } from "firebase/firestore";
 
@@ -338,6 +338,110 @@ describe("chat", () => {
     await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/typing/bob`), { typing: true, updatedAt: serverTimestamp() }));
     await assertSucceeds(getDoc(doc(db(BOB), `matches/${MATCH}/typing/alice`)));
     await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}/typing/alice`)));
+  });
+
+  test("reactions: only your own key, only from the fixed set", async () => {
+    await seed((fs) => setDoc(doc(fs, `matches/${MATCH}/messages/r1`), { senderId: ALICE, type: "text", text: "a", createdAt: new Date() }));
+    const ref = (uid) => doc(db(uid), `matches/${MATCH}/messages/r1`);
+    await assertSucceeds(updateDoc(ref(BOB), { "reactions.bob": "🔥" }));
+    await assertSucceeds(updateDoc(ref(ALICE), { "reactions.alice": "❤️" }));
+    await assertSucceeds(updateDoc(ref(BOB), { "reactions.bob": "😂" }));
+    await assertFails(updateDoc(ref(BOB), { "reactions.alice": "👍" }));
+    await assertFails(updateDoc(ref(BOB), { reactions: { bob: "🔥" } })); // would wipe Alice's
+    await assertFails(updateDoc(ref(BOB), { "reactions.bob": "🍆" }));
+    await assertFails(updateDoc(ref(BOB), { "reactions.bob": "🔥", text: "edited" }));
+    await assertFails(updateDoc(ref(EVE), { "reactions.eve": "🔥" }));
+    await assertSucceeds(updateDoc(ref(BOB), { "reactions.bob": deleteField() }));
+    // Reactions are never part of a new message.
+    await assertFails(setDoc(doc(db(ALICE), `matches/${MATCH}/messages/r2`), { ...text(ALICE), reactions: { alice: "🔥" } }));
+    // Blocking stops reactions too.
+    await seed((fs) => setDoc(doc(fs, "users/alice/blocks/bob"), { createdAt: new Date() }));
+    await assertFails(updateDoc(ref(BOB), { "reactions.bob": "🔥" }));
+  });
+
+  test("replies carry a small, well-formed quote", async () => {
+    const quote = { id: "m0", senderId: BOB, text: "hey you", type: "text" };
+    const reply = (q) => setDoc(doc(db(ALICE), `matches/${MATCH}/messages/${Math.random().toString(36).slice(2)}`), { ...text(ALICE), replyTo: q });
+    await assertSucceeds(reply(quote));
+    await assertSucceeds(reply(null));
+    await assertSucceeds(reply({ ...quote, type: "voice", text: "" }));
+    await assertFails(reply({ ...quote, senderId: EVE }));
+    await assertFails(reply({ ...quote, text: "x".repeat(121) }));
+    await assertFails(reply({ ...quote, type: "sticker" }));
+    await assertFails(reply({ ...quote, extra: true }));
+    await assertFails(reply({ ...quote, id: "" }));
+    await assertFails(reply("m0"));
+  });
+
+  test("view-once photos: only the recipient opens them, once, and deletes the image", async () => {
+    const fs = db(ALICE);
+    const photo = { senderId: ALICE, type: "image", text: "", imageId: "v1", imageBlurhash: null, game: null, viewOnce: true, createdAt: serverTimestamp() };
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `matches/${MATCH}/images/v1`), { owner: ALICE, data: jpeg(2048), createdAt: serverTimestamp() });
+    batch.set(doc(fs, `matches/${MATCH}/messages/vo1`), photo);
+    await assertSucceeds(batch.commit());
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vo2`), { ...text(ALICE), viewOnce: true }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vo3`), { ...photo, viewedAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vo4`), { ...photo, viewOnce: "yes" }));
+
+    // The sender can't mark their own photo opened, and nobody can backdate it.
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}/messages/vo1`), { viewedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(db(BOB), `matches/${MATCH}/messages/vo1`), { viewedAt: new Date(0) }));
+    await assertFails(updateDoc(doc(db(EVE), `matches/${MATCH}/messages/vo1`), { viewedAt: serverTimestamp() }));
+
+    const bob = db(BOB);
+    const open = writeBatch(bob);
+    open.delete(doc(bob, `matches/${MATCH}/images/v1`));
+    open.update(doc(bob, `matches/${MATCH}/messages/vo1`), { viewedAt: serverTimestamp() });
+    await assertSucceeds(open.commit());
+    // Once.
+    await assertFails(updateDoc(doc(bob, `matches/${MATCH}/messages/vo1`), { viewedAt: serverTimestamp() }));
+
+    // Ordinary photos can't be "opened".
+    await seed((s) => setDoc(doc(s, `matches/${MATCH}/messages/plain`), { senderId: ALICE, type: "image", text: "", imageId: "x", createdAt: new Date() }));
+    await assertFails(updateDoc(doc(bob, `matches/${MATCH}/messages/plain`), { viewedAt: serverTimestamp() }));
+  });
+
+  test("voice notes: owner-only audio docs, at most 900 KB and 61 s", async () => {
+    const fs = db(ALICE);
+    const audio = (extra = {}) => ({ owner: ALICE, data: jpeg(4096), createdAt: serverTimestamp(), durationMs: 4200, ...extra });
+    await assertSucceeds(setDoc(doc(fs, `matches/${MATCH}/audio/a1`), audio()));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a2`), audio({ owner: BOB })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a3`), audio({ data: jpeg(901 * 1024) })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a4`), audio({ durationMs: 0 })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a5`), audio({ durationMs: 61001 })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a6`), audio({ durationMs: 1.5 })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a7`), audio({ codec: "aac" })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/audio/a8`), audio({ createdAt: new Date(0) })));
+    await assertFails(setDoc(doc(db(EVE), `matches/${MATCH}/audio/a9`), audio({ owner: EVE })));
+    await assertSucceeds(getDoc(doc(db(BOB), `matches/${MATCH}/audio/a1`)));
+    await assertFails(getDoc(doc(db(EVE), `matches/${MATCH}/audio/a1`)));
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}/audio/a1`), { durationMs: 100 }));
+
+    const voice = { senderId: ALICE, type: "voice", text: "", imageId: null, imageBlurhash: null, game: null, audioId: "a1", durationMs: 4200, createdAt: serverTimestamp() };
+    await assertSucceeds(setDoc(doc(fs, `matches/${MATCH}/messages/vn1`), voice));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vn2`), { ...voice, audioId: "missing" }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vn3`), { ...voice, durationMs: null }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vn4`), { ...text(ALICE), audioId: "a1" }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/vn5`), { ...text(ALICE), durationMs: 4200 }));
+    await assertSucceeds(updateDoc(doc(fs, `matches/${MATCH}`), {
+      lastMessage: { text: "Voice note", senderId: ALICE, type: "voice", sentAt: serverTimestamp() },
+    }));
+    await assertSucceeds(deleteDoc(doc(db(BOB), `matches/${MATCH}/audio/a1`)));
+  });
+
+  test("date cards", async () => {
+    const fs = db(ALICE);
+    const date = { title: "Rooftop cocktails at golden hour", detail: "Somewhere with a view.", emoji: "🍸" };
+    const card = (d, extra = {}) => ({ senderId: ALICE, type: "date", text: d?.title ?? "", imageId: null, imageBlurhash: null, game: null, date: d, createdAt: serverTimestamp(), ...extra });
+    await assertSucceeds(setDoc(doc(fs, `matches/${MATCH}/messages/d1`), card(date)));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d2`), card(null)));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d3`), card({ ...date, title: "" })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d4`), card({ ...date, title: "x".repeat(81) })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d5`), card({ ...date, detail: "x".repeat(201) })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d6`), card({ ...date, where: "my place" })));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d7`), { ...text(ALICE), date }));
+    await assertFails(setDoc(doc(fs, `matches/${MATCH}/messages/d8`), card(date, { type: "sticker" })));
   });
 });
 
