@@ -35,6 +35,7 @@ class FirebaseSafetyRepository @Inject constructor(
         val match = db.collection("matches").document(matchId)
         deleteAll(match.collection("messages"))
         deleteAll(match.collection("images"))
+        deleteAll(match.collection("audio"))
         runCatching { match.collection("typing").document(uid).delete().await() }
         // Private album access, both directions.
         runCatching { db.collection("albums").document(uid).collection("access").document(other).delete().await() }

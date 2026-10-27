@@ -7,6 +7,7 @@ import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.AlbumAccessRequest
 import io.github.arnavdugad.ember.data.model.AlbumPhoto
 import io.github.arnavdugad.ember.data.model.AuthUser
+import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.Match
@@ -15,8 +16,10 @@ import io.github.arnavdugad.ember.data.model.Message
 import io.github.arnavdugad.ember.data.model.Photo
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.ProfileDraft
+import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.ReportReason
 import io.github.arnavdugad.ember.data.model.SwipeDirection
+import io.github.arnavdugad.ember.data.model.VoiceClip
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 import java.io.File
@@ -131,15 +134,34 @@ interface DiscoveryRepository {
     fun observeLikesYou(): Flow<List<Admirer>>
 }
 
+/**
+ * Matches and chat. Sends never wait for the network: a message is written to the local cache
+ * at once (it reads as [Message.pending] until the server has it) and syncs when it can. Photo
+ * and voice uploads are the exception and need a connection.
+ */
 interface MatchRepository {
     fun observeMatches(): Flow<List<Match>>
+
+    /** A one-off read of the user's matches, for background checks. Empty when signed out. */
+    suspend fun fetchMatches(): List<Match>
     fun observeMatch(matchId: String): Flow<Match?>
     fun observeMessages(matchId: String): Flow<List<Message>>
     fun observeTyping(matchId: String, otherUid: String): Flow<Boolean>
     suspend fun setTyping(matchId: String, typing: Boolean)
-    suspend fun sendText(matchId: String, text: String)
-    suspend fun sendImage(matchId: String, uri: Uri, caption: String)
+    suspend fun sendText(matchId: String, text: String, replyTo: ReplyRef? = null)
+    suspend fun sendImage(matchId: String, uri: Uri, caption: String, viewOnce: Boolean = false, replyTo: ReplyRef? = null)
     suspend fun sendGame(matchId: String, card: GameCard)
+    suspend fun sendVoice(matchId: String, clip: VoiceClip, replyTo: ReplyRef? = null)
+    suspend fun sendDate(matchId: String, idea: DateIdea)
+
+    /** Sets my reaction to [messageId], or removes it when [emoji] is null. */
+    suspend fun react(matchId: String, messageId: String, emoji: String?)
+
+    /** The recipient closed a view-once photo: delete the image and mark the message opened. */
+    suspend fun markViewOnceOpened(matchId: String, message: Message)
+
+    /** A playable local copy of a voice note, downloaded on first use. */
+    suspend fun voiceFile(matchId: String, message: Message): File
     suspend fun markRead(matchId: String)
 }
 

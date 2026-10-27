@@ -336,12 +336,31 @@ service cloud.firestore {
 
     // ---------- matches and chat ----------
 
+    function messageTypes() {
+      return ['text', 'image', 'game', 'voice', 'date'];
+    }
+
+    // Must match Reactions.all in the app.
+    function reactionEmojis() {
+      return ['🔥', '❤️', '😂', '😮', '👍'];
+    }
+
+    // AAC voice notes are stored like images: bytes in a document, at most 900 KB.
+    function isAudio(data) {
+      return data is bytes && data.size() > 0 && data.size() <= 900 * 1024;
+    }
+
+    // 60 s of recording, plus a second of slack for the encoder's last frame.
+    function isVoiceNoteDuration(ms) {
+      return ms is int && ms >= 1 && ms <= 61000;
+    }
+
     function validLastMessage(m) {
       return m is map
         && m.keys().hasOnly(['text', 'senderId', 'type', 'sentAt'])
         && m.senderId == me()
         && m.sentAt == request.time
-        && m.type in ['text', 'image', 'game']
+        && m.type in messageTypes()
         && m.text is string && m.text.size() <= 2000;
     }
 
@@ -391,6 +410,8 @@ service cloud.firestore {
         allow delete: if isParticipant(matchId);
       }
 
+      // Chat photos. Either participant may delete one: the unmatch cleanup, and the recipient
+      // of a view-once photo right after viewing it.
       match /images/{imageId} {
         allow read, delete: if isParticipant(matchId);
         allow create: if isParticipant(matchId)
@@ -401,18 +422,71 @@ service cloud.firestore {
         allow update: if false;
       }
 
-      match /messages/{messageId} {
+      // Voice notes: AAC bytes in a document, owned by the sender.
+      match /audio/{audioId} {
         allow read, delete: if isParticipant(matchId);
+        allow create: if isParticipant(matchId)
+          && request.resource.data.keys().hasOnly(['owner', 'data', 'createdAt', 'durationMs'])
+          && request.resource.data.owner == me()
+          && isAudio(request.resource.data.data)
+          && isVoiceNoteDuration(request.resource.data.durationMs)
+          && request.resource.data.createdAt == request.time;
         allow update: if false;
+      }
+
+      match /messages/{messageId} {
+        function users() {
+          return matchDoc(matchId).data.users;
+        }
+
+        function validReply(r) {
+          return r is map
+            && r.keys().hasOnly(['id', 'senderId', 'text', 'type'])
+            && r.id is string && r.id.size() >= 1 && r.id.size() <= 128
+            && r.senderId in users()
+            && r.text is string && r.text.size() <= 120
+            && r.type in messageTypes();
+        }
+
+        function validDate(d) {
+          return d is map
+            && d.keys().hasOnly(['title', 'detail', 'emoji'])
+            && d.title is string && d.title.size() >= 1 && d.title.size() <= 80
+            && d.detail is string && d.detail.size() <= 200
+            && d.emoji is string && d.emoji.size() <= 16;
+        }
+
+        // A participant sets or removes only their own reaction, and only from the fixed set.
+        function isOwnReaction() {
+          return changed().hasOnly(['reactions'])
+            && request.resource.data.reactions is map
+            && request.resource.data.reactions.diff(resource.data.get('reactions', {})).affectedKeys().hasOnly([me()])
+            && (!(me() in request.resource.data.reactions)
+                || request.resource.data.reactions[me()] in reactionEmojis())
+            && !blocked(me(), otherIn(users()));
+        }
+
+        // The recipient of a view-once photo marks it opened, exactly once.
+        function opensViewOnce() {
+          return changed().hasOnly(['viewedAt'])
+            && resource.data.get('viewOnce', false) == true
+            && resource.data.senderId != me()
+            && resource.data.get('viewedAt', null) == null
+            && request.resource.data.viewedAt == request.time;
+        }
+
+        allow read, delete: if isParticipant(matchId);
+        allow update: if isParticipant(matchId) && (isOwnReaction() || opensViewOnce());
 
         allow create: if isParticipant(matchId)
-          && !blocked(me(), otherIn(matchDoc(matchId).data.users))
+          && !blocked(me(), otherIn(users()))
           && request.resource.data.keys().hasOnly([
-               'senderId', 'type', 'text', 'imageId', 'imageBlurhash', 'game', 'createdAt'
+               'senderId', 'type', 'text', 'imageId', 'imageBlurhash', 'game', 'createdAt',
+               'viewOnce', 'audioId', 'durationMs', 'date', 'replyTo'
              ])
           && request.resource.data.senderId == me()
           && request.resource.data.createdAt == request.time
-          && request.resource.data.type in ['text', 'image', 'game']
+          && request.resource.data.type in messageTypes()
           && request.resource.data.get('text', '') is string
           && request.resource.data.get('text', '').size() <= 2000
           && (request.resource.data.type != 'text'
@@ -425,6 +499,9 @@ service cloud.firestore {
           && (request.resource.data.get('imageBlurhash', null) == null
                 || (request.resource.data.imageBlurhash is string
                     && request.resource.data.imageBlurhash.size() <= 100))
+          && (!('viewOnce' in request.resource.data)
+                || (request.resource.data.viewOnce is bool
+                    && (request.resource.data.type == 'image' || request.resource.data.viewOnce == false)))
           && (request.resource.data.type != 'game'
                 || (request.resource.data.game is map
                     && request.resource.data.game.keys().hasOnly(['mode', 'prompt'])
@@ -432,7 +509,17 @@ service cloud.firestore {
                     && request.resource.data.game.prompt is string
                     && request.resource.data.game.prompt.size() <= 300))
           && (request.resource.data.type == 'game'
-                || request.resource.data.get('game', null) == null);
+                || request.resource.data.get('game', null) == null)
+          && (request.resource.data.type != 'voice'
+                || (request.resource.data.get('audioId', null) is string
+                    && isVoiceNoteDuration(request.resource.data.get('durationMs', null))
+                    && existsAfter(/databases/$(database)/documents/matches/$(matchId)/audio/$(request.resource.data.audioId))))
+          && (request.resource.data.type == 'voice'
+                || (request.resource.data.get('audioId', null) == null
+                    && request.resource.data.get('durationMs', null) == null))
+          && (request.resource.data.type != 'date' || validDate(request.resource.data.get('date', null)))
+          && (request.resource.data.type == 'date' || request.resource.data.get('date', null) == null)
+          && (request.resource.data.get('replyTo', null) == null || validReply(request.resource.data.replyTo));
       }
     }
 

@@ -69,6 +69,7 @@ import io.github.arnavdugad.ember.ui.discover.DiscoverViewModel
 import io.github.arnavdugad.ember.ui.likes.LikesYouScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesViewModel
+import io.github.arnavdugad.ember.ui.matches.UnmatchSnackbar
 import io.github.arnavdugad.ember.ui.profile.EditProfileScreen
 import io.github.arnavdugad.ember.ui.profile.EditSection
 import io.github.arnavdugad.ember.ui.profile.MeScreen
@@ -226,12 +227,15 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     }
                     composable<ChatRoute> { backStack ->
                         val route = backStack.toRoute<ChatRoute>()
-                        ChatScreen(
-                            matchId = route.matchId,
-                            onBack = { nav.popBackStack() },
-                            onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
-                            onRemoved = { nav.popBackStack() },
-                        )
+                        // The top-bar avatar flies into the profile's hero photo.
+                        CompositionLocalProvider(LocalNavScope provides this) {
+                            ChatScreen(
+                                matchId = route.matchId,
+                                onBack = { nav.popBackStack() },
+                                onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
+                                onRemoved = { nav.popBackStack() },
+                            )
+                        }
                     }
                     composable<EditProfileRoute> { backStack ->
                         val route = backStack.toRoute<EditProfileRoute>()
@@ -262,6 +266,14 @@ fun MainScaffold(deepLinks: DeepLinks) {
         ) {
             GlassNavBar(selected = tab, unread = unread, onSelect = ::selectTab, haze = haze)
         }
+        // Above the nav bar, and outside the NavHost so it outlives the screen that unmatched.
+        UnmatchSnackbar(
+            matchesVm,
+            Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = if (tab >= 0) BottomBarSpace else 24.dp),
+        )
     }
 }
 
