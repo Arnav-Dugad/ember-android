@@ -5,9 +5,14 @@ import com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException
 import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Source
 import io.github.arnavdugad.ember.data.model.ReportReason
+import io.github.arnavdugad.ember.data.repo.ReportLimitException
+import io.github.arnavdugad.ember.data.repo.ReportLimits
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import kotlinx.coroutines.tasks.await
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -44,19 +49,44 @@ class FirebaseSafetyRepository @Inject constructor(
         if (db.collection("matches").document(matchId).get().await().exists()) unmatch(matchId)
     }
 
+    /**
+     * Rules allow [ReportLimits.PER_DAY] reports per UTC day: each report is written in one batch
+     * with a +1 on `users/{me}/limits/{day}`, and its id names that step. Blocking is never
+     * limited, so [alsoBlock] still blocks when the report can't be sent.
+     */
     override suspend fun report(uid: String, reason: ReportReason, details: String, matchId: String?, alsoBlock: Boolean) {
-        db.collection("reports").add(
-            mapOf(
-                "reporterId" to auth.requireUid(),
-                "targetId" to uid,
-                "reason" to reason.key,
-                "details" to details.take(1000),
-                "matchId" to matchId,
-                "createdAt" to FieldValue.serverTimestamp(),
-                "status" to "open",
-            ),
-        ).await()
+        val me = auth.requireUid()
+        val data = mapOf(
+            "reporterId" to me,
+            "targetId" to uid,
+            "reason" to reason.key,
+            "details" to details.take(1000),
+            "matchId" to matchId,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "status" to "open",
+        )
+        var sent = false
+        // Two tries: a second report sent at the same moment can take our counter step first.
+        for (attempt in 1..2) {
+            val day = ReportLimits.dayId(Instant.now())
+            val counter = users.document(me).collection("limits").document(day)
+            val count = counter.get(Source.SERVER).await().getLong("reports") ?: 0L
+            if (count >= ReportLimits.PER_DAY) break
+            val batch = db.batch()
+            batch.set(counter, mapOf("reports" to count + 1))
+            batch.set(db.collection("reports").document(ReportLimits.reportId(me, day, count + 1)), data)
+            try {
+                batch.commit().await()
+                sent = true
+                break
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) throw e
+                // The rules check the counter's date against the server clock.
+                if (attempt == 2) throw IllegalStateException("Couldn't send the report. Check that your phone's date and time are set automatically, then try again.")
+            }
+        }
         if (alsoBlock) block(uid)
+        if (!sent) throw ReportLimitException(blocked = alsoBlock)
     }
 
     /**

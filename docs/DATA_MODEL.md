@@ -126,6 +126,21 @@ imageBlurhash, game: {mode, prompt} or null, createdAt == request.time }`.
 `{ reporterId == auth.uid, targetId, reason (enum), details (<= 1000), matchId or null, createdAt == request.time, status == "open" }`.
 Create only. Nobody can read, update or delete.
 
+- **Id:** `{reporterId}_{yyyy-MM-dd}_{n}`, where the date is today in UTC and `n` is the value of
+  today's report counter (below) after this report.
+- **Daily limit:** at most **20 reports per reporter per UTC day**. A report is only accepted in
+  the same batch as a +1 on `users/{me}/limits/{today}`; the rules compare the counter before
+  (`get`) and after (`getAfter`) the batch and check that the report id names the new value.
+
+### `users/{uid}/limits/{yyyy-MM-dd}`
+`{ reports: int }`: how many reports `uid` has sent on that UTC day.
+- The doc id must equal the UTC date of `request.time`, so only today's counter can be written.
+- Created with `reports == 1`, then only ever incremented by exactly 1, up to 20, and each step
+  requires the matching report (`reports/{uid}_{day}_{reports}`) to exist after the batch.
+- Readable by the owner. Never deleted (not even with the account), so the limit can't be reset.
+
+Likes are intentionally not rate-limited.
+
 Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam_scam`,
 `offensive_messages`, `safety_concern`, `other`.
 
@@ -141,8 +156,11 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
   3. When the other person likes back, their client creates the match.
 - **Unmatch:** delete the messages, chat images, typing docs and match doc, plus album access both ways.
 - **Block:** write the block doc, then unmatch.
+- **Report:** read today's counter (`users/{me}/limits/{UTC date}`, from the server), then in one
+  batch set it to `n + 1` and create `reports/{me}_{date}_{n + 1}`. At 20 the app says so instead
+  of writing (blocking still works). A lost race (two reports at once) retries once.
 - **Delete account:** client-side deletes of everything the user owns or created (see
-  `FirebaseSafetyRepository`), then `FirebaseUser.delete()`. Reports are kept.
+  `FirebaseSafetyRepository`), then `FirebaseUser.delete()`. Reports and report counters are kept.
 
 ## Remote Config
 

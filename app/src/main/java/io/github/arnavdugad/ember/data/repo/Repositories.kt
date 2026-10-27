@@ -17,13 +17,35 @@ import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.ReportReason
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import kotlinx.coroutines.flow.Flow
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 
 /** Which backend the app is talking to. Preview is the offline, in-memory demo. */
 enum class BackendMode { Firebase, Preview }
 
 /** Thrown by [ProfileRepository.completeAgeGate] when the server says the user is under 18. */
 class UnderageException : Exception("You must be 18 or older to use Ember.")
+
+/** Reports are capped per reporter per UTC day; the security rules enforce it with a counter doc. */
+object ReportLimits {
+    const val PER_DAY = 20
+
+    /** The counter doc id: the UTC date as yyyy-MM-dd. */
+    fun dayId(now: Instant): String = now.atOffset(ZoneOffset.UTC).toLocalDate().toString()
+
+    /** Report ids name the counter step they used, so a step can never carry two reports. */
+    fun reportId(uid: String, day: String, n: Long): String = "${uid}_${day}_$n"
+}
+
+/** Thrown by [SafetyRepository.report] once today's report limit is used up. */
+class ReportLimitException(blocked: Boolean) : Exception(
+    if (blocked) {
+        "You've reached today's limit of ${ReportLimits.PER_DAY} reports, so this one wasn't sent. We've still blocked them."
+    } else {
+        "You've reached today's limit of ${ReportLimits.PER_DAY} reports. You can still block anyone, and report again tomorrow."
+    },
+)
 
 interface AuthRepository {
     val mode: BackendMode
