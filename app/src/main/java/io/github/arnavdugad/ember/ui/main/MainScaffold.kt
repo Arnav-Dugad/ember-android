@@ -70,6 +70,7 @@ import io.github.arnavdugad.ember.ui.likes.LikesYouScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesScreen
 import io.github.arnavdugad.ember.ui.matches.MatchesViewModel
 import io.github.arnavdugad.ember.ui.profile.EditProfileScreen
+import io.github.arnavdugad.ember.ui.profile.EditSection
 import io.github.arnavdugad.ember.ui.profile.MeScreen
 import io.github.arnavdugad.ember.ui.profile.ProfileDetailScreen
 import io.github.arnavdugad.ember.ui.root.DeepLink
@@ -89,7 +90,8 @@ import kotlinx.serialization.Serializable
 
 @Serializable data class ChatRoute(val matchId: String)
 
-@Serializable data object EditProfileRoute
+/** [section] is an [EditSection] key to scroll to, from a profile-strength tip. */
+@Serializable data class EditProfileRoute(val section: String? = null)
 
 @Serializable data object SettingsRoute
 
@@ -193,7 +195,7 @@ fun MainScaffold(deepLinks: DeepLinks) {
                     }
                     composable<MeRoute>(enterTransition = { fadeIn() }, exitTransition = { fadeOut() }) {
                         MeScreen(
-                            onEdit = { nav.navigate(EditProfileRoute) },
+                            onEdit = { section -> nav.navigate(EditProfileRoute(section?.key)) },
                             onSettings = { nav.navigate(SettingsRoute) },
                             onAlbum = { nav.navigate(MyAlbumRoute) },
                             onPreview = { uid -> nav.navigate(ProfileRoute(uid)) },
@@ -228,7 +230,10 @@ fun MainScaffold(deepLinks: DeepLinks) {
                             onRemoved = { nav.popBackStack() },
                         )
                     }
-                    composable<EditProfileRoute> { EditProfileScreen(onBack = { nav.popBackStack() }) }
+                    composable<EditProfileRoute> { backStack ->
+                        val route = backStack.toRoute<EditProfileRoute>()
+                        EditProfileScreen(onBack = { nav.popBackStack() }, initialSection = EditSection.of(route.section))
+                    }
                     composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }) }
                     composable<MyAlbumRoute> { MyAlbumScreen(onBack = { nav.popBackStack() }) }
                     composable<LikesYouRoute> {
