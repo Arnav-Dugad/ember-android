@@ -149,6 +149,84 @@ service cloud.firestore {
         && d.age <= accountAge(getAfter(accountPath(uid)).data) + 1;
     }
 
+    // ---------- presence, Spotlight and like notes (Discover & profiles) ----------
+    // "Online now", the daily Spotlight boost, and the prompt/photo notes a like can carry. Used
+    // by the profile, swipe, likedBy and limits rules. See docs/DATA_MODEL.md.
+
+    // lastActiveAt orders everyone's deck, so it may never be in the future (that would pin a
+    // profile to the top). While hideActivity is on it may only be a UTC midnight: the day a
+    // person was around, never the time.
+    function validPresence(d) {
+      return optionalBool(d, 'hideActivity')
+        && (!('lastActiveAt' in d)
+            || (d.lastActiveAt is timestamp
+                && d.lastActiveAt <= request.time
+                && (d.get('hideActivity', false) != true
+                    || d.lastActiveAt == timestamp.date(d.lastActiveAt.year(), d.lastActiveAt.month(), d.lastActiveAt.day()))));
+    }
+
+    // Spotlight lasts at most 30 minutes from the write. Like freeTonightUntil, it stays valid on
+    // later writes because request.time only moves forward.
+    function validSpotlight(d) {
+      return !('spotlightUntil' in d) || d.spotlightUntil == null
+        || (d.spotlightUntil is timestamp && d.spotlightUntil <= request.time + duration.value(30, 'm'));
+    }
+
+    // At most this many Spotlights per user per UTC day.
+    function maxSpotlightsPerDay() {
+      return 1;
+    }
+
+    // Today's Spotlight counter sits next to the report counters: users/{uid}/limits/spotlight_{yyyy-MM-dd}.
+    function spotlightCounterId() {
+      return 'spotlight_' + utcDay();
+    }
+
+    function spotlightCounterPath(uid) {
+      return /databases/$(database)/documents/users/$(uid)/limits/$(spotlightCounterId());
+    }
+
+    function profilePath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    // Starting a Spotlight takes exactly one step on today's counter, in the same batch.
+    function takesSpotlightStep(uid) {
+      let path = spotlightCounterPath(uid);
+      let before = exists(path) ? get(path).data.spotlights : 0;
+      return existsAfter(path)
+        && getAfter(path).data.spotlights == before + 1
+        && getAfter(path).data.spotlights <= maxSpotlightsPerDay();
+    }
+
+    // Turning Spotlight off (null or deleted) is always fine; turning it on (or moving it) costs a step.
+    function spotlightChangeOk(uid) {
+      return !changed().hasAny(['spotlightUntil'])
+        || request.resource.data.get('spotlightUntil', null) == null
+        || takesSpotlightStep(uid);
+    }
+
+    // The other half: a counter step only goes with a profile write that starts a Spotlight.
+    function startsSpotlight(uid) {
+      let until = getAfter(profilePath(uid)).data.get('spotlightUntil', null);
+      return until is timestamp
+        && until > request.time
+        && until != get(profilePath(uid)).data.get('spotlightUntil', null);
+    }
+
+    // A like aimed at one prompt or photo: {kind, ref, text}. ref is the prompt or photo id;
+    // text is an optional comment of up to 140 characters.
+    function validLikeNote(n) {
+      return n is map
+        && n.keys().hasAll(['kind', 'ref', 'text'])
+        && n.keys().hasOnly(['kind', 'ref', 'text'])
+        && n.kind in ['prompt', 'photo']
+        && n.ref is string && n.ref.matches('^[A-Za-z0-9_-]{1,128}$')
+        && n.text is string && n.text.size() <= 140;
+    }
+
+    // ---------- end of presence, Spotlight and like notes ----------
+
     // ---------- profiles ----------
 
     // Coordinates are stored at two decimal places (about 1 km). Anything finer is rejected so a
@@ -164,7 +242,9 @@ service cloud.firestore {
           'afterDark', 'privateAlbumCount', 'isDemo', 'onboarded', 'createdAt', 'updatedAt',
           'lastActiveAt', 'freeTonightUntil', 'voiceDurationMs',
           // Privacy switches.
-          'hideDistance', 'paused'
+          'hideDistance', 'paused',
+          // Presence and Spotlight (validPresence, validSpotlight).
+          'hideActivity', 'spotlightUntil'
         ])
         && d.uid == uid
         && ageMatches(uid, d)
@@ -199,7 +279,10 @@ service cloud.firestore {
         && (!('freeTonightUntil' in d) || d.freeTonightUntil == null
               || (d.freeTonightUntil is timestamp
                   && d.freeTonightUntil <= request.time + duration.value(370, 'm')))
-        && (!('voiceDurationMs' in d) || d.voiceDurationMs == null || isVoiceDuration(d.voiceDurationMs));
+        && (!('voiceDurationMs' in d) || d.voiceDurationMs == null || isVoiceDuration(d.voiceDurationMs))
+        // Presence and Spotlight.
+        && validPresence(d)
+        && validSpotlight(d);
     }
 
     match /users/{uid} {
@@ -211,13 +294,17 @@ service cloud.firestore {
       // The age gate writes the account doc and the first profile doc in one batch.
       allow create: if isOwner(uid) && isAdultAfter()
         && validProfile(uid, request.resource.data)
-        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == request.time);
+        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == request.time)
+        // A new profile never starts in the Spotlight (that takes a counter step on an update).
+        && request.resource.data.get('spotlightUntil', null) == null;
 
       allow update: if isOwner(uid) && isAdultAfter()
         && validProfile(uid, request.resource.data)
         && !changed().hasAny(['uid'])
         && (!changed().hasAny(['createdAt'])
-              || (!('createdAt' in resource.data) && request.resource.data.createdAt == request.time));
+              || (!('createdAt' in resource.data) && request.resource.data.createdAt == request.time))
+        // Once per UTC day (see spotlightChangeOk).
+        && spotlightChangeOk(uid);
 
       allow delete: if isOwner(uid);
 
@@ -251,9 +338,12 @@ service cloud.firestore {
         allow read: if isOwner(uid);
         allow create: if isOwner(uid) && isAdult()
           && targetId != uid
-          && request.resource.data.keys().hasOnly(['direction', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['direction', 'createdAt', 'note'])
           && request.resource.data.direction in ['like', 'nope', 'super']
-          && request.resource.data.createdAt == request.time;
+          && request.resource.data.createdAt == request.time
+          // My copy of a like's prompt/photo note (validLikeNote); a nope carries none.
+          && (!('note' in request.resource.data)
+              || (request.resource.data.direction != 'nope' && validLikeNote(request.resource.data.note)));
         allow update: if false;
         // Rewind: within 10 minutes and never after a match. Once the account doc is gone
         // (account deletion), any remaining swipes may be cleared.
@@ -269,9 +359,11 @@ service cloud.firestore {
         allow read: if isOwner(uid) && isAdult();
         allow create: if isOwner(likerId) && isAdult()
           && likerId != uid
-          && request.resource.data.keys().hasOnly(['createdAt', 'super'])
+          && request.resource.data.keys().hasOnly(['createdAt', 'super', 'note'])
           && request.resource.data.createdAt == request.time
-          && request.resource.data.super is bool;
+          && request.resource.data.super is bool
+          // A like on one prompt or photo, with an optional comment (validLikeNote).
+          && (!('note' in request.resource.data) || validLikeNote(request.resource.data.note));
         allow update: if false;
         allow delete: if isOwner(likerId);
       }
@@ -663,6 +755,26 @@ service cloud.firestore {
       allow create, update: if isOwner(uid) && docId == 'config' && validAiConfig(request.resource.data);
     }
     // ---- end AI chat settings ----
+    // ---------- Spotlight counter (Discover & profiles) ----------
+    // users/{uid}/limits/spotlight_{yyyy-MM-dd} = { spotlights: int }, the same per-UTC-day pattern
+    // as the report counter above (whose rules never match this id, since it isn't a bare date).
+    // Created at 1 in the same batch as the profile write that starts a Spotlight, raised only one
+    // step at a time up to maxSpotlightsPerDay() (so with one boost a day, never), never deleted.
+    // Reads fall under the report counter's owner-only read.
+    match /users/{uid}/limits/{counterId} {
+      allow create: if isOwner(uid) && isAdult()
+        && counterId == spotlightCounterId()
+        && request.resource.data.keys().hasOnly(['spotlights'])
+        && request.resource.data.spotlights == 1
+        && startsSpotlight(uid);
+      allow update: if isOwner(uid) && isAdult()
+        && counterId == spotlightCounterId()
+        && request.resource.data.keys().hasOnly(['spotlights'])
+        && request.resource.data.spotlights == resource.data.spotlights + 1
+        && request.resource.data.spotlights <= maxSpotlightsPerDay()
+        && startsSpotlight(uid);
+    }
+    // ---------- end of Spotlight counter ----------
 
     match /reports/{reportId} {
       allow read, update, delete: if false;

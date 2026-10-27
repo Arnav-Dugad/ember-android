@@ -10,6 +10,7 @@ import io.github.arnavdugad.ember.data.model.AuthUser
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.GameCard
+import io.github.arnavdugad.ember.data.model.LikeNote
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.MatchOnlyDetails
 import io.github.arnavdugad.ember.data.model.Message
@@ -51,6 +52,9 @@ class ReportLimitException(blocked: Boolean) : Exception(
         "You've reached today's limit of ${ReportLimits.PER_DAY} reports. You can still block anyone, and report again tomorrow."
     },
 )
+
+/** Thrown by [ProfileRepository.startSpotlight] when today's Spotlight has been used. */
+class SpotlightUsedException : Exception("You've used today's Spotlight. You can boost again tomorrow.")
 
 /** Firebase provider ids, as returned by [AuthRepository.signInMethods]. */
 const val PROVIDER_GOOGLE = "google.com"
@@ -109,7 +113,22 @@ interface ProfileRepository {
 
     /** Readable only when matched with [uid]; null otherwise. */
     suspend fun getMatchOnly(uid: String): MatchOnlyDetails?
+
+    /**
+     * The heartbeat: marks the user active (and keeps their shown age current). Call it as often
+     * as you like; it skips writes that would come too soon, and while "Show when I'm active" is
+     * off it writes only the day, once a day.
+     */
     suspend fun touchLastActive()
+
+    /** When each of [uids] was last active, for those who show it. At most 30 per call. */
+    suspend fun lastActive(uids: Collection<String>): Map<String, Instant>
+
+    /** Puts me first in everyone's deck for half an hour. Throws [SpotlightUsedException] after today's. */
+    suspend fun startSpotlight(): Instant
+
+    /** Whether today's (UTC) Spotlight has already been used. */
+    suspend fun spotlightUsedToday(): Boolean
 
     /** Shows the "Free tonight" badge for the next six hours, or clears it. */
     suspend fun setFreeTonight(enabled: Boolean)
@@ -124,8 +143,14 @@ interface ProfileRepository {
 
 interface DiscoveryRepository {
     suspend fun loadDeck(filters: DiscoveryFilters, afterDark: Boolean): List<Profile>
-    /** Records the swipe; returns the match id when it made a match, else null. */
-    suspend fun swipe(target: Profile, direction: SwipeDirection): String?
+    /**
+     * Records the swipe; returns the match id when it made a match, else null. A like may carry a
+     * [note] about one prompt or photo: the other person sees it in Likes you.
+     */
+    suspend fun swipe(target: Profile, direction: SwipeDirection, note: LikeNote? = null): String?
+
+    /** The note my like of [targetUid] carried, if any (read back from my own swipe). */
+    suspend fun myNote(targetUid: String): LikeNote?
 
     /** True if the swipe was undone. Fails if it already produced a match. */
     suspend fun rewind(targetUid: String): Boolean
@@ -198,6 +223,9 @@ interface PrivacyRepository {
 
     /** True: I'm left out of everyone's discovery deck. Matches and chats carry on. */
     suspend fun setPaused(paused: Boolean)
+
+    /** True: nobody sees "Active now" on me, and `lastActiveAt` only ever says which day. */
+    suspend fun setHideActivity(hide: Boolean)
 
     /** Everything Ember stores about me, plus the messages I sent, as pretty-printed JSON. */
     suspend fun exportMyData(): String

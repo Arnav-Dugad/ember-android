@@ -47,11 +47,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.arnavdugad.ember.core.designsystem.DemoBadge
 import io.github.arnavdugad.ember.core.designsystem.EmberButton
+import io.github.arnavdugad.ember.core.designsystem.EmberFlame
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassButton
@@ -62,6 +65,7 @@ import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
 import io.github.arnavdugad.ember.core.designsystem.LiquidPageIndicator
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
+import io.github.arnavdugad.ember.core.designsystem.OnlineDot
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
@@ -70,6 +74,7 @@ import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.core.util.Geo
 import io.github.arnavdugad.ember.data.model.AccessStatus
 import io.github.arnavdugad.ember.data.model.Catalog
+import io.github.arnavdugad.ember.data.model.LikeNote
 import io.github.arnavdugad.ember.data.model.Profile
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.discover.FreeTonightBadge
@@ -84,7 +89,7 @@ fun ProfileDetailScreen(
     initialPhoto: Int,
     fromDeck: Boolean,
     onBack: () -> Unit,
-    onDeckAction: (SwipeDirection) -> Unit,
+    onDeckAction: (SwipeDirection, LikeNote?) -> Unit,
     onOpenAlbum: (ownerName: String) -> Unit,
     onRemoved: () -> Unit,
 ) {
@@ -93,9 +98,14 @@ fun ProfileDetailScreen(
     val colors = EmberTheme.colors
     var safetyOpen by remember { mutableStateOf(false) }
     var viewerAt by remember { mutableStateOf<Int?>(null) }
+    var likeOpen by remember { mutableStateOf(false) }
+    // Kept after closing so the sheet doesn't empty out while it slides away.
+    var likeTarget by remember { mutableStateOf<LikeTarget?>(null) }
     LaunchedEffect(state.removed) { if (state.removed) onRemoved() }
 
     val profile = state.profile
+    // Hearts on prompts and photos: only for someone in my deck I haven't matched (or swiped) yet.
+    val canLike = fromDeck && profile != null && state.match == null && profile.uid != state.myUid
     GlassScene(
         Modifier.fillMaxSize(),
         backdrop = { Box(Modifier.fillMaxSize().background(colors.background)) },
@@ -105,7 +115,7 @@ fun ProfileDetailScreen(
                 if (state.loading) {
                     ProfileSkeleton()
                 } else {
-                    Text("This profile isn't available anymore.", style = EmberTheme.type.body, color = colors.textSecondary)
+                    Unavailable(onBack)
                 }
             }
         } else {
@@ -118,6 +128,14 @@ fun ProfileDetailScreen(
                 onWithdrawAlbum = viewModel::withdrawAlbum,
                 onOpenAlbum = { onOpenAlbum(profile.name) },
                 onOpenPhoto = { viewerAt = it },
+                onLike = if (canLike) {
+                    { target ->
+                        likeTarget = target
+                        likeOpen = true
+                    }
+                } else {
+                    null
+                },
             )
         }
 
@@ -146,9 +164,9 @@ fun ProfileDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RoundAction(Icons.Rounded.Close, "Nope", colors.nope, 64) { onDeckAction(SwipeDirection.Nope) }
-                RoundAction(Icons.Rounded.Star, "Super like", colors.superLike, 52) { onDeckAction(SwipeDirection.Super) }
-                RoundAction(Icons.Rounded.Favorite, "Like", colors.like, 64) { onDeckAction(SwipeDirection.Like) }
+                RoundAction(Icons.Rounded.Close, "Nope", colors.nope, 64) { onDeckAction(SwipeDirection.Nope, null) }
+                RoundAction(Icons.Rounded.Star, "Super like", colors.superLike, 52) { onDeckAction(SwipeDirection.Super, null) }
+                RoundAction(Icons.Rounded.Favorite, "Like", colors.like, 64) { onDeckAction(SwipeDirection.Like, null) }
             }
         }
 
@@ -185,6 +203,36 @@ fun ProfileDetailScreen(
         if (profile != null && at != null && profile.photos.isNotEmpty()) {
             PhotoViewer(photos = profile.photos, initial = at, name = profile.name, onDismiss = { viewerAt = null })
         }
+
+        LikeNoteSheet(
+            visible = likeOpen && canLike,
+            target = likeTarget,
+            name = profile?.name.orEmpty(),
+            onSend = { note ->
+                likeOpen = false
+                onDeckAction(SwipeDirection.Like, note)
+            },
+            onDismiss = { likeOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun Unavailable(onBack: () -> Unit) {
+    val colors = EmberTheme.colors
+    Column(Modifier.padding(36.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        EmberFlame(size = 64.dp)
+        Spacer(Modifier.height(18.dp))
+        Text("This profile isn't available", style = EmberTheme.type.title, color = colors.textPrimary, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "They may have paused or deleted their account.",
+            style = EmberTheme.type.bodySmall,
+            color = colors.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(20.dp))
+        GlassButton("Go back", onClick = onBack)
     }
 }
 
@@ -212,6 +260,7 @@ private fun ProfileBody(
     onWithdrawAlbum: () -> Unit,
     onOpenAlbum: () -> Unit,
     onOpenPhoto: (Int) -> Unit,
+    onLike: ((LikeTarget) -> Unit)?,
 ) {
     val colors = EmberTheme.colors
     val scroll = rememberScrollState()
@@ -251,6 +300,16 @@ private fun ProfileBody(
                 { pager.currentPage + pager.currentPageOffsetFraction },
                 Modifier.statusBarsPadding().padding(start = 76.dp, end = 76.dp, top = 28.dp),
             )
+            // Like this photo: sits above the sheet's rounded top, which overlaps the hero by 36dp.
+            val shown = profile.photos.getOrNull(pager.currentPage)?.let { LikeTarget.OfPhoto(it) }
+            if (onLike != null && shown != null && shown.likeable) {
+                LikeHeart(
+                    contentDescription = "Like this photo",
+                    onClick = { onLike(shown) },
+                    style = GlassDefaults.overPhoto(),
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 52.dp),
+                )
+            }
         }
         Column(
             Modifier
@@ -262,8 +321,13 @@ private fun ProfileBody(
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
             Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                val online = profile.isOnline(state.viewerHidesActivity)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics(mergeDescendants = true) {}) {
                     Text("${profile.name}, ${profile.age}", style = EmberTheme.type.headline, color = colors.textPrimary)
+                    if (online) {
+                        Spacer(Modifier.width(6.dp))
+                        OnlineDot()
+                    }
                     if (profile.isDemo) {
                         Spacer(Modifier.width(10.dp))
                         DemoBadge()
@@ -276,6 +340,14 @@ private fun ProfileBody(
                         Spacer(Modifier.width(4.dp))
                         Text(place, style = EmberTheme.type.bodySmall, color = colors.textSecondary)
                     }
+                }
+                profile.activityLabel(state.viewerHidesActivity)?.let { activity ->
+                    Text(
+                        activity,
+                        style = EmberTheme.type.caption,
+                        color = if (online) colors.like else colors.textTertiary,
+                        modifier = Modifier.padding(top = 4.dp, start = 2.dp),
+                    )
                 }
                 if (profile.isDemo) {
                     Text(
@@ -297,11 +369,18 @@ private fun ProfileBody(
                 Section("About") { Text(profile.bio, style = EmberTheme.type.body, color = colors.textPrimary) }
             }
             profile.prompts.forEach { prompt ->
+                val target = LikeTarget.OfPrompt(prompt)
                 GlassSurface(Modifier.fillMaxWidth(), shape = EmberShapes.panel) {
-                    Column(Modifier.padding(20.dp)) {
-                        Text(prompt.question, style = EmberTheme.type.label, color = colors.accent)
-                        Spacer(Modifier.height(8.dp))
-                        Text(prompt.answer, style = EmberTheme.type.title, color = colors.textPrimary)
+                    Row(Modifier.padding(start = 20.dp, top = 20.dp, bottom = 20.dp, end = if (onLike != null) 12.dp else 20.dp)) {
+                        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+                            Text(prompt.question, style = EmberTheme.type.label, color = colors.accent)
+                            Spacer(Modifier.height(8.dp))
+                            Text(prompt.answer, style = EmberTheme.type.title, color = colors.textPrimary)
+                        }
+                        if (onLike != null && target.likeable) {
+                            Spacer(Modifier.width(8.dp))
+                            LikeHeart(contentDescription = "Like this prompt", onClick = { onLike(target) }, modifier = Modifier.align(Alignment.Bottom))
+                        }
                     }
                 }
             }

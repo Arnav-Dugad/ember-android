@@ -87,6 +87,7 @@ import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import io.github.arnavdugad.ember.data.settings.ThemeMode
 import io.github.arnavdugad.ember.ui.legal.LegalDoc
 import io.github.arnavdugad.ember.ui.legal.LegalSheet
+import io.github.arnavdugad.ember.ui.root.AccountDeletion
 import io.github.arnavdugad.ember.update.UpdateViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -125,6 +126,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepo: SettingsRepository,
     private val auth: AuthRepository,
     private val safety: SafetyRepository,
+    private val deletion: AccountDeletion,
     val mode: BackendMode,
     aiSettings: AiSettingsRepository,
 ) : ViewModel() {
@@ -243,7 +245,8 @@ class SettingsViewModel @Inject constructor(
             _account.update { it.copy(deleting = true, error = null) }
             val result = runCatching {
                 auth.reauthenticate(activity, password)
-                safety.deleteAccount()
+                // Keeps this screen up until the login is gone, then the welcome screen says so.
+                deletion.run { safety.deleteAccount() }
             }
             _account.update { AccountActionState(deleting = false, error = result.exceptionOrNull()?.let { e -> friendly(e, null) }) }
         }

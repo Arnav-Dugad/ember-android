@@ -5,8 +5,10 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.Blob
 import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.DocumentReference
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.GeoPoint
+import io.github.arnavdugad.ember.data.model.Presence
 import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import kotlinx.coroutines.tasks.await
 import kotlinx.serialization.json.Json
@@ -34,6 +36,16 @@ class FirebasePrivacyRepository @Inject constructor(
     override suspend fun setHideDistance(hide: Boolean) = setFlag("hideDistance", hide)
 
     override suspend fun setPaused(paused: Boolean) = setFlag("paused", paused)
+
+    /**
+     * Hiding also rewrites `lastActiveAt` to today's UTC midnight in the same write, so the exact
+     * time of the last heartbeat doesn't linger (the rules require a midnight while hidden).
+     */
+    override suspend fun setHideActivity(hide: Boolean) {
+        val uid = auth.requireUid()
+        val stamp: Any = if (hide) Timestamp(Presence.dayStart(Instant.now())) else FieldValue.serverTimestamp()
+        users.document(uid).update(account.profileFields(mapOf("hideActivity" to hide, "lastActiveAt" to stamp))).await()
+    }
 
     private suspend fun setFlag(field: String, value: Boolean) {
         val uid = auth.requireUid()

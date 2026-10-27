@@ -40,6 +40,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -126,6 +129,9 @@ fun MeScreen(
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val afterDark by viewModel.afterDark.collectAsStateWithLifecycle()
     val confetti by viewModel.confetti.collectAsStateWithLifecycle()
+    val spotlightVm: SpotlightViewModel = hiltViewModel()
+    val spotlight by spotlightVm.state.collectAsStateWithLifecycle()
+    var spotlightOpen by remember { mutableStateOf(false) }
     val colors = EmberTheme.colors
     val haptics = EmberTheme.haptics
     LaunchedEffect(profile) { profile?.let(viewModel::checkComplete) }
@@ -179,6 +185,11 @@ fun MeScreen(
                 "${p?.privateAlbumCount ?: 0} photos · only people you approve can see them",
                 onAlbum,
             )
+            SpotlightCard(spotlight, onClick = {
+                spotlightVm.clearError()
+                spotlightVm.refresh()
+                spotlightOpen = true
+            })
             val freeUntil = p?.freeTonightUntil?.takeIf { p.isFreeTonight() }
             ToggleRow(
                 icon = Icons.Rounded.Bedtime,
@@ -205,6 +216,15 @@ fun MeScreen(
             MenuItem(Icons.Rounded.Settings, "Settings", "Appearance, safety, updates, account", onSettings)
         }
         if (confetti != 0L) ConfettiBurst(key = confetti, modifier = Modifier.fillMaxSize())
+        SpotlightSheet(
+            visible = spotlightOpen,
+            state = spotlight,
+            onStart = {
+                haptics.celebrate()
+                spotlightVm.start()
+            },
+            onDismiss = { spotlightOpen = false },
+        )
     }
 }
 

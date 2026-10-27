@@ -78,6 +78,8 @@ import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
 import io.github.arnavdugad.ember.core.designsystem.LiquidPageIndicator
+import io.github.arnavdugad.ember.core.designsystem.OnlineDot
+import io.github.arnavdugad.ember.core.designsystem.OnlineGreenOverPhoto
 import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.core.util.Geo
@@ -199,6 +201,9 @@ class DeckController {
  * Each time [dealKey] changes (a fresh deck), the top three are dealt in from below one by one,
  * the bottom card first, each on a spring with a little spin. [onDragCommit] fires the moment a
  * drag decides a direction, before the card flies.
+ *
+ * [fan] (0..1, read every frame) spreads the cards behind the top one to either side, for
+ * pull-to-refresh; callers pass 0 when animations are off.
  */
 @Composable
 fun SwipeDeck(
@@ -209,7 +214,11 @@ fun SwipeDeck(
     modifier: Modifier = Modifier,
     dealKey: Int = 0,
     onDragCommit: (SwipeDirection) -> Unit = {},
+    viewerHidesActivity: Boolean = false,
+    fan: () -> Float = { 0f },
 ) {
+    // A spring between the raw pull and the cards, so the fan settles instead of snapping shut.
+    val fanned by animateFloatAsState(fan(), spring(dampingRatio = 0.6f, stiffness = 420f), label = "fan")
     val visible = profiles.take(3)
     // Saved with the screen, so coming back from a profile doesn't deal the same deck again.
     var dealt by rememberSaveable { mutableIntStateOf(Int.MIN_VALUE) }
@@ -245,7 +254,16 @@ fun SwipeDeck(
                 }
                 Box(dealing) {
                     if (depth == 0) {
-                        TopCard(profile, topState, tilt, onCommit = onDragCommit, onSwiped = { onSwiped(profile, it) }, onOpen = { onOpen(profile, it) })
+                        TopCard(
+                            profile,
+                            topState,
+                            tilt,
+                            onCommit = onDragCommit,
+                            onSwiped = { onSwiped(profile, it) },
+                            onOpen = { onOpen(profile, it) },
+                            showOnline = profile.isOnline(viewerHidesActivity),
+                            fan = { fanned },
+                        )
                     } else {
                         val progress by remember(topState) { derivedStateOf { topState.progress } }
                         val scale = lerp(1f - depth * 0.05f, 1f - (depth - 1) * 0.05f, progress)
@@ -256,10 +274,17 @@ fun SwipeDeck(
                             onTapLeft = {},
                             onTapRight = {},
                             onOpen = {},
+                            showOnline = profile.isOnline(viewerHidesActivity),
                             modifier = Modifier.fillMaxSize().graphicsLayer {
                                 scaleX = scale
                                 scaleY = scale
                                 translationY = lift.dp.toPx()
+                                // Fanned out: alternate sides, the deeper card further, pivoting
+                                // low like cards held in a hand.
+                                val side = if (depth % 2 == 1) -1f else 1f
+                                transformOrigin = TransformOrigin(0.5f, 1.1f)
+                                rotationZ = side * FAN_DEGREES * depth * 0.6f * fanned
+                                translationX = side * FAN_SHIFT.toPx() * depth * 0.6f * fanned
                             },
                         )
                     }
@@ -277,6 +302,8 @@ private fun TopCard(
     onCommit: (SwipeDirection) -> Unit,
     onSwiped: (SwipeDirection) -> Unit,
     onOpen: (Int) -> Unit,
+    showOnline: Boolean,
+    fan: () -> Float,
 ) {
     val scope = rememberCoroutineScope()
     // The gyroscope tilt fades out under a finger and while the card is moving.
@@ -331,6 +358,7 @@ private fun TopCard(
             onOpen = { onOpen(photoIndex) },
             stamps = { CardStamps(state) },
             shared = true,
+            showOnline = showOnline,
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(state) {
@@ -375,7 +403,9 @@ private fun TopCard(
                     translationY = o.y
                     // Rotate around a point below the card when grabbed at the top (and above
                     // it when grabbed at the bottom), the way a held photo pivots in your hand.
-                    rotationZ = state.rotationFor(o)
+                    // The pull-to-refresh fan nudges the top card the other way from the first
+                    // card behind it.
+                    rotationZ = state.rotationFor(o) + FAN_DEGREES * 0.35f * fan()
                     rotationX = tilt.x * tiltWeight
                     rotationY = nudge.value + tilt.y * tiltWeight
                     cameraDistance = 14f * this.density
@@ -448,6 +478,8 @@ fun ProfileCard(
     shared: Boolean = false,
     /** The top card: its overlays (voice pill) are interactive. */
     live: Boolean = shared,
+    /** A green dot by the name: they're online, and the viewer may see that. */
+    showOnline: Boolean = false,
 ) {
     val colors = EmberTheme.colors
     Box(
@@ -524,6 +556,10 @@ fun ProfileCard(
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     Text("${profile.age}", style = EmberTheme.type.title.copy(fontWeight = EmberTheme.type.body.fontWeight), color = Color.White.copy(alpha = 0.9f))
+                    if (showOnline) {
+                        Spacer(Modifier.width(6.dp))
+                        OnlineDot(color = OnlineGreenOverPhoto)
+                    }
                     if (profile.isDemo) {
                         Spacer(Modifier.width(10.dp))
                         DemoBadge()
@@ -568,6 +604,10 @@ fun ProfileCard(
 
 private const val MAX_ROTATION = 16f
 private const val DEAL_STAGGER_MS = 90L
+
+/** How far a fully fanned deck spreads: degrees and sideways shift per card depth (scaled). */
+private const val FAN_DEGREES = 6f
+private val FAN_SHIFT = 14.dp
 
 /** Each dealt card spins in from a slightly different angle (top, middle, bottom). */
 private val DEAL_SPIN = floatArrayOf(-7f, 9f, -5f)

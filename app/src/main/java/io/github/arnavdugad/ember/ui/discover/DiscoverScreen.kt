@@ -66,11 +66,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.arnavdugad.ember.core.designsystem.AmbientGlow
 import io.github.arnavdugad.ember.core.designsystem.EmberButton
@@ -86,10 +91,12 @@ import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
+import io.github.arnavdugad.ember.core.designsystem.OnlineDot
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
+import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.designsystem.shimmer
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.LookingFor
@@ -97,6 +104,9 @@ import io.github.arnavdugad.ember.data.model.Place
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import io.github.arnavdugad.ember.ui.main.BottomBarSpace
 import io.github.arnavdugad.ember.ui.onboarding.CityPickerSheet
+import io.github.arnavdugad.ember.ui.profile.SpotlightButton
+import io.github.arnavdugad.ember.ui.profile.SpotlightSheet
+import io.github.arnavdugad.ember.ui.profile.SpotlightViewModel
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -115,6 +125,12 @@ fun DiscoverScreen(
     val myPhoto by viewModel.myPhotoUrl.collectAsStateWithLifecycle()
     val me by viewModel.me.collectAsStateWithLifecycle()
     val likesCount by viewModel.likesYouCount.collectAsStateWithLifecycle()
+    val spotlightVm: SpotlightViewModel = hiltViewModel()
+    val spotlight by spotlightVm.state.collectAsStateWithLifecycle()
+    var spotlightOpen by remember { mutableStateOf(false) }
+    // Hiding my own activity hides everyone's: no dots, no "Online now" chip.
+    val hidesActivity = me?.hideActivity == true
+    val reduceMotion = rememberReduceMotion()
     val controller = remember { DeckController() }
     val scope = rememberCoroutineScope()
     var filtersOpen by remember { mutableStateOf(false) }
@@ -160,7 +176,14 @@ fun DiscoverScreen(
                     haptics.confirm()
                     viewModel.setAfterDark(!state.afterDark)
                 })
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(8.dp))
+                SpotlightButton(spotlight, onClick = {
+                    haptics.tick()
+                    spotlightVm.clearError()
+                    spotlightVm.refresh()
+                    spotlightOpen = true
+                })
+                Spacer(Modifier.width(8.dp))
                 GlassIconButton(Icons.Rounded.Tune, contentDescription = "Filters", onClick = ::openFilters)
             }
             // The chips and the deck scroll together inside the pull-to-refresh box: pulling down
@@ -182,6 +205,7 @@ fun DiscoverScreen(
                             QuickChips(
                                 travel = state.filters.browseFrom,
                                 freeTonightUntil = me?.freeTonightUntil?.takeIf { me?.isFreeTonight() == true },
+                                onlineOnly = state.filters.onlineOnly.takeUnless { hidesActivity },
                                 picks = state.picks.size,
                                 likes = likesCount,
                                 onStopTravel = {
@@ -191,6 +215,10 @@ fun DiscoverScreen(
                                 onToggleFreeTonight = {
                                     haptics.confirm()
                                     viewModel.setFreeTonight(me?.isFreeTonight() != true)
+                                },
+                                onToggleOnline = {
+                                    haptics.confirm()
+                                    viewModel.setOnlineOnly(!state.filters.onlineOnly)
                                 },
                                 onOpenPicks = { picksOpen = true },
                                 onOpenLikes = onOpenLikes,
@@ -224,11 +252,29 @@ fun DiscoverScreen(
                                             modifier = Modifier.fillMaxSize(),
                                             dealKey = state.dealKey,
                                             onDragCommit = ::committed,
+                                            viewerHidesActivity = hidesActivity,
+                                            // Pulling to refresh fans the stack out a little, like
+                                            // riffling a deck; it stays fanned while the new one loads.
+                                            fan = {
+                                                when {
+                                                    reduceMotion -> 0f
+                                                    state.refreshing -> 1f
+                                                    else -> pullState.distanceFraction.coerceIn(0f, 1f)
+                                                }
+                                            },
                                         )
-                                        DeckPhase.Loading -> Box(Modifier.fillMaxSize().shimmer(EmberShapes.card))
+                                        DeckPhase.Loading -> DeckSkeleton()
                                         DeckPhase.Empty -> EmptyDeck(
                                             error = state.error,
                                             afterDark = state.afterDark,
+                                            narrowedBy = when {
+                                                state.filters.onlineOnly && !hidesActivity -> "online right now"
+                                                state.filters.freeTonightOnly -> "free tonight"
+                                                else -> null
+                                            },
+                                            onShowEveryone = {
+                                                viewModel.applyFilters(state.filters.copy(onlineOnly = false, freeTonightOnly = false))
+                                            },
                                             onRetry = viewModel::reload,
                                             onWiden = ::openFilters,
                                         )
@@ -325,6 +371,16 @@ fun DiscoverScreen(
             onDismiss = { picksOpen = false },
         )
 
+        SpotlightSheet(
+            visible = spotlightOpen,
+            state = spotlight,
+            onStart = {
+                haptics.celebrate()
+                spotlightVm.start()
+            },
+            onDismiss = { spotlightOpen = false },
+        )
+
         val celebration = state.celebration
         val ai by viewModel.ai.collectAsStateWithLifecycle()
         AnimatedVisibility(celebration != null, enter = fadeIn(), exit = fadeOut()) {
@@ -347,17 +403,20 @@ fun DiscoverScreen(
 private enum class DeckPhase { Loading, Deck, Empty }
 
 /**
- * The row under the top bar: travel mode (when on), Free tonight, Today's picks and Likes you.
- * It scrolls sideways on narrow phones.
+ * The row under the top bar: travel mode (when on), Free tonight, Online now, Today's picks and
+ * Likes you. It scrolls sideways on narrow phones. [onlineOnly] is null when I hide my activity
+ * (then I can't see anyone's, so there's no chip).
  */
 @Composable
 private fun QuickChips(
     travel: Place?,
     freeTonightUntil: Instant?,
+    onlineOnly: Boolean?,
     picks: Int,
     likes: Int,
     onStopTravel: () -> Unit,
     onToggleFreeTonight: () -> Unit,
+    onToggleOnline: () -> Unit,
     onOpenPicks: () -> Unit,
     onOpenLikes: () -> Unit,
 ) {
@@ -385,12 +444,32 @@ private fun QuickChips(
             a11y = if (until != null) "Free tonight is on until $until. Tap to turn it off." else "Tell people you're free tonight",
             onClick = onToggleFreeTonight,
         )
-        QuickChip(if (picks > 0) "Today's picks · $picks" else "Today's picks", active = false, emoji = "✨", onClick = onOpenPicks)
+        if (onlineOnly != null) {
+            QuickChip(
+                "Online now",
+                active = onlineOnly,
+                leading = { OnlineDot(size = 8.dp, color = if (onlineOnly) colors.onAccent else colors.like, contentDescription = null) },
+                a11y = if (onlineOnly) "Showing only people online now. Tap to show everyone." else "Show only people online now",
+                onClick = onToggleOnline,
+            )
+        }
+        QuickChip(
+            if (picks > 0) "Today's picks · $picks" else "Today's picks",
+            active = false,
+            emoji = "✨",
+            a11y = if (picks > 0) "Today's picks, $picks people" else "Today's picks",
+            onClick = onOpenPicks,
+        )
         QuickChip(
             if (likes > 0) "Likes you · $likes" else "Likes you",
             active = false,
             icon = Icons.Rounded.Favorite,
             iconTint = colors.like,
+            a11y = when (likes) {
+                0 -> "Likes you"
+                1 -> "Likes you, 1 person"
+                else -> "Likes you, $likes people"
+            },
             onClick = onOpenLikes,
         )
     }
@@ -406,6 +485,7 @@ private fun QuickChip(
     iconTint: Color? = null,
     trailing: ImageVector? = null,
     a11y: String? = null,
+    leading: (@Composable () -> Unit)? = null,
 ) {
     val colors = EmberTheme.colors
     val fill by animateFloatAsState(if (active) 1f else 0f, label = "chipFill")
@@ -419,6 +499,10 @@ private fun QuickChip(
             .then(if (a11y != null) Modifier.semantics(mergeDescendants = true) { contentDescription = a11y } else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (leading != null) {
+            leading()
+            Spacer(Modifier.width(4.dp))
+        }
         if (emoji != null) {
             Text(emoji, style = EmberTheme.type.caption)
             Spacer(Modifier.width(6.dp))
@@ -435,21 +519,29 @@ private fun QuickChip(
     }
 }
 
+/** On narrow phones (with Spotlight beside it) the pill drops its label and keeps the moon. */
 @Composable
 private fun AfterDarkPill(enabled: Boolean, onToggle: () -> Unit) {
     val colors = EmberTheme.colors
     val fill by animateFloatAsState(if (enabled) 1f else 0f, label = "afterDark")
+    val compact = LocalConfiguration.current.screenWidthDp < 380
     Row(
         Modifier
-            .pressable(onClick = onToggle)
+            .pressable(onClick = onToggle, role = Role.Switch)
             .glass(PillShape, GlassDefaults.surface(), LocalHazeState.current)
             .background(colors.accentHorizontal, PillShape, alpha = fill)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = if (compact) 12.dp else 14.dp, vertical = 10.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "After Dark"
+                stateDescription = if (enabled) "On" else "Off"
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.Rounded.NightsStay, contentDescription = null, tint = if (enabled) Color.White else colors.textPrimary, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("After Dark", style = EmberTheme.type.caption, color = if (enabled) Color.White else colors.textPrimary)
+        if (!compact) {
+            Spacer(Modifier.width(6.dp))
+            Text("After Dark", style = EmberTheme.type.caption, color = if (enabled) Color.White else colors.textPrimary)
+        }
     }
 }
 
@@ -529,8 +621,19 @@ private fun ActionButton(
     }
 }
 
+/**
+ * Nobody left to show. When a quick filter ([narrowedBy], e.g. "online right now") is what emptied
+ * the deck, the first button simply turns it off.
+ */
 @Composable
-private fun EmptyDeck(error: String?, afterDark: Boolean, onRetry: () -> Unit, onWiden: () -> Unit) {
+private fun EmptyDeck(
+    error: String?,
+    afterDark: Boolean,
+    narrowedBy: String?,
+    onShowEveryone: () -> Unit,
+    onRetry: () -> Unit,
+    onWiden: () -> Unit,
+) {
     val colors = EmberTheme.colors
     GlassSurface(Modifier.fillMaxSize(), shape = EmberShapes.card) {
         Column(
@@ -541,22 +644,55 @@ private fun EmptyDeck(error: String?, afterDark: Boolean, onRetry: () -> Unit, o
             EmberFlame(size = 72.dp)
             Spacer(Modifier.height(20.dp))
             Text(
-                if (error != null) "Hmm, that didn't load" else "You've seen everyone nearby",
+                when {
+                    error != null -> "Hmm, that didn't load"
+                    narrowedBy != null -> "Nobody's $narrowedBy"
+                    else -> "You've seen everyone nearby"
+                },
                 style = EmberTheme.type.title,
                 color = colors.textPrimary,
                 textAlign = TextAlign.Center,
+                modifier = Modifier.semantics { heading() },
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                error ?: if (afterDark) "After Dark only shows people open to casual or adventurous connections. Widen your filters or check back later." else "Widen your distance or age range, or check back later. New people join every day.",
+                when {
+                    error != null -> error
+                    narrowedBy != null -> "Check back in a bit, or see everyone in the meantime."
+                    afterDark -> "After Dark only shows people open to casual or adventurous connections. Widen your filters or check back later."
+                    else -> "Widen your distance or age range, or check back later. New people join every day."
+                },
                 style = EmberTheme.type.bodySmall,
                 color = colors.textSecondary,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(24.dp))
-            EmberButton(if (error != null) "Try again" else "Refresh", onClick = onRetry, modifier = Modifier.fillMaxWidth())
+            if (error == null && narrowedBy != null) {
+                EmberButton("Show everyone", onClick = onShowEveryone, modifier = Modifier.fillMaxWidth())
+            } else {
+                EmberButton(if (error != null) "Try again" else "Refresh", onClick = onRetry, modifier = Modifier.fillMaxWidth())
+            }
             Spacer(Modifier.height(10.dp))
             GlassButton("Adjust filters", onClick = onWiden, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+/** The loading deck: a card-shaped shimmer with the name, place and tags sketched in. */
+@Composable
+private fun DeckSkeleton() {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .shimmer(EmberShapes.card)
+            .semantics { contentDescription = "Loading people near you" },
+    ) {
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 20.dp, end = 20.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.width(170.dp).height(28.dp).shimmer(EmberShapes.small))
+            Box(Modifier.width(120.dp).height(14.dp).shimmer(EmberShapes.small))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                repeat(3) { Box(Modifier.width(78.dp).height(28.dp).shimmer(PillShape)) }
+            }
         }
     }
 }
@@ -661,6 +797,8 @@ private fun FiltersSheet(
                             maxAge = ages.endInclusive.roundToInt(),
                             lookingFor = lookingFor,
                             freeTonightOnly = freeOnly,
+                            // Set by its own chip; the sheet leaves it as it was.
+                            onlineOnly = filters.onlineOnly,
                             browseFrom = browseFrom,
                         ),
                         dark,

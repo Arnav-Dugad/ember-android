@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SocialDistance
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -102,6 +103,8 @@ class PrivacyViewModel @Inject constructor(
     fun setShowDistance(show: Boolean) = save { privacy.setHideDistance(!show) }
 
     fun setPaused(paused: Boolean) = save { privacy.setPaused(paused) }
+
+    fun setShowActivity(show: Boolean) = save { privacy.setHideActivity(!show) }
 
     /** Writes the export to the file the user picked in the system "Save as" screen. */
     fun export(uri: Uri) {
@@ -186,6 +189,18 @@ fun PrivacyScreen(onBack: () -> Unit, viewModel: PrivacyViewModel = hiltViewMode
                         enabled = loaded,
                     )
                     SettingsToggleRow(
+                        icon = Icons.Rounded.Schedule,
+                        title = "Show when I'm active",
+                        subtitle = if (profile?.hideActivity == true) {
+                            "Off: nobody sees \"Active now\" on you, and you won't see it on anyone else either."
+                        } else {
+                            "On: a green dot and \"Active 2h ago\" show on your profile. Turn it off and you won't see others' either."
+                        },
+                        checked = profile?.hideActivity != true,
+                        onCheckedChange = viewModel::setShowActivity,
+                        enabled = loaded,
+                    )
+                    SettingsToggleRow(
                         icon = Icons.Rounded.PauseCircle,
                         title = "Pause my profile",
                         subtitle = if (profile?.paused == true) {
@@ -218,6 +233,12 @@ fun PrivacyScreen(onBack: () -> Unit, viewModel: PrivacyViewModel = hiltViewMode
                         "Location: city level only",
                         "Your position is rounded to about 1 km on your phone before it's saved, with your city name. " +
                             "Your exact GPS location is never stored. Others see your city and, unless you switch it off above, a rough distance.",
+                    )
+                    PrivacyFact(
+                        Icons.Rounded.Schedule,
+                        "Activity status",
+                        "While Ember is open it saves when you were last active, about every five minutes, so matches and people nearby can see \"Active now\". " +
+                            "With \"Show when I'm active\" off, only the date is saved, at most once a day.",
                     )
                     PrivacyFact(
                         Icons.Rounded.Cake,
