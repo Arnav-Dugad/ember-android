@@ -38,7 +38,7 @@ Ember runs in two modes, picked automatically at startup:
 | People | 72 demo profiles: AI-generated portraits of people who don't exist, plus illustrations | real users, plus seeded demo profiles until real sign-ups pass a threshold |
 | Data | your profile is saved on the device; matches and chats reset when the app closes | Firestore (free Spark plan): data and photos |
 
-That lets anyone try the full UI from the release APK before you set up a Firebase project. Demo profiles always wear a **Demo** badge, can match with you for testing, and **never** send messages.
+That lets anyone try the full UI from the release APK before you set up a Firebase project. Demo profiles always wear a **Demo** badge, can match with you for testing, and never send messages on their own. If you add your own AI key (see AI chat below), they reply in character on your phone only.
 
 ## Features
 
@@ -51,6 +51,7 @@ That lets anyone try the full UI from the release APK before you set up a Fireba
 - **After Dark:** a darker palette that also limits discovery to people open to casual or adventurous connections.
 - **Matching:** created only when likes are mutual, checked by security rules. The match screen has flying photos, an ember burst and a spring headline.
 - **Chat:** real-time messages, reactions, replies, view-once photos, voice notes, a date planner built from shared interests, typing indicator, read receipts, Truth or Dare cards, and gentle safety nudges when someone asks for money or to move off the app. Messages sent offline go out when you reconnect, and a background check posts local notifications for new messages.
+- **AI chat with demo profiles:** bring your own Claude, Gemini, ChatGPT or OpenAI-compatible key (OpenRouter, Groq, DeepSeek, Mistral, xAI) and every demo profile texts back in character. Replies come from their bio, prompts, city and vibe, with a texting style of their own. They read, show typing, double-text, can send the first message, answer Truth or Dare and react to date ideas. Keys are encrypted with the Android Keystore and sent only to the provider you pick. Replies stay on the phone; chats with real people never touch AI.
 - **Matches list:** NEW and "Your turn" badges, swipe to archive or unmatch, and a 10-second undo.
 - **Private album:** photos are invisible until the owner approves a match, and access can be revoked instantly. Security rules check access on every photo read, screenshots are blocked, and viewers see a consent reminder first.
 - **Safety and privacy:** block (which also hides you from them), unmatch, report (8 reasons, 20 a day), hide distance, pause your profile, download your data, private lock-screen notifications, and full account deletion.

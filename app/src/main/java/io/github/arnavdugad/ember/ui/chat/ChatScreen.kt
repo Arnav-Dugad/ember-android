@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material3.Text
@@ -64,6 +65,7 @@ import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.image.EmberImage
+import io.github.arnavdugad.ember.data.ai.AiProvider
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Message
 import io.github.arnavdugad.ember.data.model.MessageType
@@ -82,12 +84,13 @@ private const val MORPH_WINDOW_MS = 2_000L
 private const val NUDGE_SCAN = 30
 
 @Composable
-fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> Unit, onRemoved: () -> Unit) {
+fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> Unit, onRemoved: () -> Unit, onAiSettings: () -> Unit) {
     val viewModel = hiltViewModel<ChatViewModel, ChatViewModel.Factory>(key = matchId) { it.create(matchId) }
     val match by viewModel.match.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val typing by viewModel.otherTyping.collectAsStateWithLifecycle()
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val aiProvider by viewModel.aiProvider.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
@@ -219,7 +222,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                     )
                 }
                 if (messages != null && list.isEmpty() && m != null) {
-                    item { ChatIntro(m, onPlay = { gameOpen = true }) }
+                    item { ChatIntro(m, aiProvider, onPlay = { gameOpen = true }, onAiSettings = onAiSettings) }
                 }
             }
             Composer(
@@ -250,7 +253,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             )
         }
 
-        ChatTopBar(m, onBack = onBack, onProfile = { m?.let { onOpenProfile(it.otherUid) } }, onMenu = { safetyOpen = true })
+        ChatTopBar(m, aiProvider, onBack = onBack, onProfile = { m?.let { onOpenProfile(it.otherUid) } }, onMenu = { safetyOpen = true })
 
         ui.error?.let { error ->
             LaunchedEffect(error) {
@@ -353,13 +356,12 @@ private fun Notice(text: String, color: androidx.compose.ui.graphics.Color, modi
 
 private fun receiptFor(message: Message, match: Match): String = when {
     message.pending -> "Sending…"
-    match.otherIsDemo -> "Delivered"
     message.createdAt != null && match.otherLastRead != null && !match.otherLastRead.isBefore(message.createdAt) -> "Read"
     else -> "Delivered"
 }
 
 @Composable
-private fun ChatTopBar(match: Match?, onBack: () -> Unit, onProfile: () -> Unit, onMenu: () -> Unit) {
+private fun ChatTopBar(match: Match?, aiProvider: AiProvider?, onBack: () -> Unit, onProfile: () -> Unit, onMenu: () -> Unit) {
     val colors = EmberTheme.colors
     Row(
         Modifier
@@ -391,7 +393,11 @@ private fun ChatTopBar(match: Match?, onBack: () -> Unit, onProfile: () -> Unit,
                     }
                 }
                 Text(
-                    if (match?.otherIsDemo == true) "Demo profile · won't reply" else "Tap to view profile",
+                    when {
+                        match?.otherIsDemo != true -> "Tap to view profile"
+                        aiProvider != null -> "Demo profile · AI replies with ${aiProvider.label}"
+                        else -> "Demo profile · won't reply"
+                    },
                     style = EmberTheme.type.caption,
                     color = colors.textTertiary,
                 )
@@ -402,7 +408,7 @@ private fun ChatTopBar(match: Match?, onBack: () -> Unit, onProfile: () -> Unit,
 }
 
 @Composable
-private fun ChatIntro(match: Match, onPlay: () -> Unit) {
+private fun ChatIntro(match: Match, aiProvider: AiProvider?, onPlay: () -> Unit, onAiSettings: () -> Unit) {
     val colors = EmberTheme.colors
     Column(Modifier.fillMaxWidth().padding(vertical = 40.dp, horizontal = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(110.dp).clip(CircleShape)) {
@@ -412,10 +418,10 @@ private fun ChatIntro(match: Match, onPlay: () -> Unit) {
         Text("You matched with ${match.otherName}", style = EmberTheme.type.title, color = colors.textPrimary, textAlign = TextAlign.Center)
         Spacer(Modifier.height(6.dp))
         Text(
-            if (match.otherIsDemo) {
-                "${match.otherName} is a demo profile and won't reply, but everything here works for testing."
-            } else {
-                "Skip the \"hey\". Ask about a prompt, or let the game do the flirting."
+            when {
+                !match.otherIsDemo -> "Skip the \"hey\". Ask about a prompt, or let the game do the flirting."
+                aiProvider != null -> "${match.otherName} is a demo profile. ${aiProvider.label} replies in character, using your own key."
+                else -> "${match.otherName} is a demo profile and won't reply. Add an AI key and they'll text back in character."
             },
             style = EmberTheme.type.bodySmall,
             color = colors.textSecondary,
@@ -423,6 +429,10 @@ private fun ChatIntro(match: Match, onPlay: () -> Unit) {
         )
         Spacer(Modifier.height(18.dp))
         GlassButton("Play Truth or Dare", onClick = onPlay, icon = Icons.Rounded.Casino)
+        if (match.otherIsDemo && aiProvider == null) {
+            Spacer(Modifier.height(10.dp))
+            GlassButton("Set up AI replies", onClick = onAiSettings, icon = Icons.Rounded.AutoAwesome, contentColor = colors.accent)
+        }
     }
 }
 

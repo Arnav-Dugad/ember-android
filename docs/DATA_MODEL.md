@@ -233,6 +233,21 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
   `FirebaseSafetyRepository`), including `voices/{uid}` and the `hiddenBy` entries it wrote (the
   targets come from its own `blocks`), then `FirebaseUser.delete()`. Reports and report counters are kept.
 
+## AI chat (device only)
+
+Demo profiles can reply through the user's own AI key. None of it touches Firestore, so the rules
+are unchanged: a client can still only post messages as itself.
+
+- **Settings** live in the `ember_ai` DataStore on the phone: provider, model per provider, base
+  URL (for OpenAI-compatible providers), pace, first move, and each provider's API key sealed
+  with AES-256-GCM under a non-exportable Android Keystore key (`ember_ai_keys`). Backups are off.
+- **Replies** live in `files/ai_chats/{matchId}.json` (memory only in Preview mode): the persona's
+  messages, my reactions to them, and the read/seen markers. `AiMatchRepository` merges them into
+  the chat, the match list preview, unread state, read receipts and the typing indicator.
+- **Sent to the provider**, per reply: the demo's profile, the last 40 messages of that chat, and
+  my first name, age, city, bio, prompts and interests. Nothing else, and never another chat.
+- Unmatching deletes that chat's file; deleting the account deletes every file and the keys.
+
 ## Remote Config
 
 | key | type | default |

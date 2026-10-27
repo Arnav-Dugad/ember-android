@@ -20,7 +20,7 @@ enum class LegalDoc(val title: String, val sections: List<Pair<String, String>>)
             "Adults only" to "Ember is strictly 18+. We verify age at sign-up and remove anyone who appears to be under 18. Report it if you suspect someone is.",
             "Consent, always" to "Flirting is welcome; pressure isn't. Ask before sending anything intimate, respect a no the first time, and never share someone's private photos or messages.",
             "Keep public photos public-friendly" to "Profile photos must be non-explicit. Private album photos are only visible to people you approve, and you can revoke access any time.",
-            "Be real" to "Use your own photos and your real age. Impersonation, catfishing and fake profiles are removed. Demo profiles are clearly badged and never message you.",
+            "Be real" to "Use your own photos and your real age. Impersonation, catfishing and fake profiles are removed. Demo profiles are clearly badged and never message you, unless you add your own AI key, in which case an AI replies for them on your phone.",
             "No hate, harassment or scams" to "No bullying, hate speech, threats, spam, selling or soliciting money. One report from you is enough for us to take a look.",
             "Meet safely" to "Meet in public first, tell a friend where you're going, and arrange your own transport. Trust your gut: unmatching and blocking are always one tap away.",
         ),

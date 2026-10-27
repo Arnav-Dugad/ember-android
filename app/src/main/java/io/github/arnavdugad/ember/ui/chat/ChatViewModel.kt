@@ -7,6 +7,9 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.github.arnavdugad.ember.data.ai.AiChatEngine
+import io.github.arnavdugad.ember.data.ai.AiProvider
+import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 import io.github.arnavdugad.ember.data.model.Catalog
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DatePlanner
@@ -31,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -55,6 +59,8 @@ class ChatViewModel @AssistedInject constructor(
     private val safety: SafetyRepository,
     private val unmatches: UnmatchQueue,
     profiles: ProfileRepository,
+    private val ai: AiChatEngine,
+    aiSettings: AiSettingsRepository,
 ) : ViewModel() {
     @AssistedFactory
     interface Factory {
@@ -80,6 +86,10 @@ class ChatViewModel @AssistedInject constructor(
         .map { uid -> runCatching { profiles.getProfile(uid) }.getOrNull() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /** The AI that answers for demo profiles, or null when AI chat is off or not set up. */
+    val aiProvider: StateFlow<AiProvider?> = aiSettings.config.map { if (it.ready) it.provider else null }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui.asStateFlow()
 
@@ -91,6 +101,10 @@ class ChatViewModel @AssistedInject constructor(
         // Read receipts: mark read whenever new messages arrive while the chat is open.
         viewModelScope.launch {
             messages.filterNotNull().map { it.firstOrNull()?.id }.distinctUntilChanged().collect { repo.markRead(matchId) }
+        }
+        ai.onChatOpened(matchId)
+        viewModelScope.launch {
+            ai.errors.filter { it.matchId == matchId }.collect { error -> _ui.update { it.copy(error = error.message) } }
         }
     }
 

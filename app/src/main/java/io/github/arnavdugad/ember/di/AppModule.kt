@@ -9,6 +9,12 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import io.github.arnavdugad.ember.data.ai.AiAwareSafetyRepository
+import io.github.arnavdugad.ember.data.ai.AiChatEngine
+import io.github.arnavdugad.ember.data.ai.AiChatStore
+import io.github.arnavdugad.ember.data.ai.AiMatchRepository
+import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
+import io.github.arnavdugad.ember.data.ai.BACKEND
 import io.github.arnavdugad.ember.data.preview.PreviewBackend
 import io.github.arnavdugad.ember.data.remote.FirebaseAlbumRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseAuthRepository
@@ -28,6 +34,7 @@ import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Provider
 import javax.inject.Singleton
 
@@ -67,8 +74,15 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun matches(mode: BackendMode, firebase: Provider<FirebaseMatchRepository>, preview: Provider<PreviewBackend>): MatchRepository =
+    @Named(BACKEND)
+    fun backendMatches(mode: BackendMode, firebase: Provider<FirebaseMatchRepository>, preview: Provider<PreviewBackend>): MatchRepository =
         if (mode == BackendMode.Firebase) firebase.get() else preview.get()
+
+    /** What the app uses: the backend plus demo profiles' AI replies. */
+    @Provides
+    @Singleton
+    fun matches(@Named(BACKEND) backend: MatchRepository, store: AiChatStore, engine: AiChatEngine): MatchRepository =
+        AiMatchRepository(backend, store, engine)
 
     @Provides
     @Singleton
@@ -77,8 +91,13 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun safety(mode: BackendMode, firebase: Provider<FirebaseSafetyRepository>, preview: Provider<PreviewBackend>): SafetyRepository =
-        if (mode == BackendMode.Firebase) firebase.get() else preview.get()
+    fun safety(
+        mode: BackendMode,
+        firebase: Provider<FirebaseSafetyRepository>,
+        preview: Provider<PreviewBackend>,
+        store: AiChatStore,
+        ai: AiSettingsRepository,
+    ): SafetyRepository = AiAwareSafetyRepository(if (mode == BackendMode.Firebase) firebase.get() else preview.get(), store, ai)
 
     @Provides
     @Singleton

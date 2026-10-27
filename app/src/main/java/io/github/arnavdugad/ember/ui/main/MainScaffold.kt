@@ -76,6 +76,7 @@ import io.github.arnavdugad.ember.ui.profile.MeScreen
 import io.github.arnavdugad.ember.ui.profile.ProfileDetailScreen
 import io.github.arnavdugad.ember.ui.root.DeepLink
 import io.github.arnavdugad.ember.ui.root.DeepLinks
+import io.github.arnavdugad.ember.ui.settings.AiChatScreen
 import io.github.arnavdugad.ember.ui.settings.PrivacyScreen
 import io.github.arnavdugad.ember.ui.settings.SettingsScreen
 import dev.chrisbanes.haze.hazeSource
@@ -98,6 +99,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object SettingsRoute
 
 @Serializable data object PrivacyRoute
+
+@Serializable data object AiChatRoute
 
 @Serializable data object MyAlbumRoute
 
@@ -234,6 +237,7 @@ fun MainScaffold(deepLinks: DeepLinks) {
                                 onBack = { nav.popBackStack() },
                                 onOpenProfile = { uid -> nav.navigate(ProfileRoute(uid)) },
                                 onRemoved = { nav.popBackStack() },
+                                onAiSettings = { nav.navigate(AiChatRoute) },
                             )
                         }
                     }
@@ -241,7 +245,8 @@ fun MainScaffold(deepLinks: DeepLinks) {
                         val route = backStack.toRoute<EditProfileRoute>()
                         EditProfileScreen(onBack = { nav.popBackStack() }, initialSection = EditSection.of(route.section))
                     }
-                    composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }, onPrivacy = { nav.navigate(PrivacyRoute) }) }
+                    composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }, onPrivacy = { nav.navigate(PrivacyRoute) }, onAiChat = { nav.navigate(AiChatRoute) }) }
+                    composable<AiChatRoute> { AiChatScreen(onBack = { nav.popBackStack() }) }
                     composable<PrivacyRoute> { PrivacyScreen(onBack = { nav.popBackStack() }) }
                     composable<MyAlbumRoute> { MyAlbumScreen(onBack = { nav.popBackStack() }) }
                     composable<LikesYouRoute> {

@@ -96,6 +96,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import io.github.arnavdugad.ember.data.ai.AiConfig
+import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
+import androidx.compose.material.icons.rounded.AutoAwesome
 
 data class AccountActionState(val deleting: Boolean = false, val error: String? = null)
 
@@ -123,8 +126,11 @@ class SettingsViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val safety: SafetyRepository,
     val mode: BackendMode,
+    aiSettings: AiSettingsRepository,
 ) : ViewModel() {
     val settings: StateFlow<AppSettings> = settingsRepo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
+
+    val ai: StateFlow<AiConfig?> = aiSettings.config.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val _account = MutableStateFlow(AccountActionState())
     val account: StateFlow<AccountActionState> = _account.asStateFlow()
@@ -249,8 +255,9 @@ class SettingsViewModel @Inject constructor(
 }
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onPrivacy: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(onBack: () -> Unit, onPrivacy: () -> Unit, onAiChat: () -> Unit, viewModel: SettingsViewModel = hiltViewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val ai by viewModel.ai.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
     val signIn by viewModel.signIn.collectAsStateWithLifecycle()
     val activity = LocalActivity.current as ComponentActivity
@@ -321,6 +328,19 @@ fun SettingsScreen(onBack: () -> Unit, onPrivacy: () -> Unit, viewModel: Setting
                     }
                     signIn.info?.let { Text(it, style = EmberTheme.type.caption, color = colors.like, modifier = Modifier.padding(horizontal = 6.dp)) }
                     signIn.error?.let { Text(it, style = EmberTheme.type.caption, color = colors.danger, modifier = Modifier.padding(horizontal = 6.dp)) }
+                }
+
+                SettingsGroup("AI chat") {
+                    SettingsRow(
+                        icon = Icons.Rounded.AutoAwesome,
+                        title = "AI replies for demo profiles",
+                        subtitle = when {
+                            ai?.ready == true -> "On with ${ai?.provider?.label}: demo profiles text back in character"
+                            ai?.hasKey == true -> "Off. Your ${ai?.provider?.label} key is saved."
+                            else -> "Add a Claude, Gemini or ChatGPT key and demo profiles reply like real people"
+                        },
+                        onClick = onAiChat,
+                    )
                 }
 
                 SettingsGroup("Discovery & After Dark") {
