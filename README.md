@@ -35,8 +35,8 @@ Ember runs in two modes, picked automatically at startup:
 |---|---|---|
 | When | the build has no `google-services.json` | `app/google-services.json` is present |
 | Accounts | one local demo user | Email, Google and phone sign-in |
-| People | 72 illustrated demo profiles generated on device | real users, plus seeded demo profiles until real sign-ups pass a threshold |
-| Data | in memory, gone when the app closes | Firestore, Storage, Cloud Functions |
+| People | 72 demo profiles: AI-generated portraits of people who don't exist, plus illustrations | real users, plus seeded demo profiles until real sign-ups pass a threshold |
+| Data | your profile is saved on the device; matches and chats reset when the app closes | Firestore, Storage, Cloud Functions |
 
 That lets anyone try the full UI from the release APK before you set up a Firebase project. Demo profiles always wear a **Demo** badge, can match with you for testing, and **never** send messages.
 
@@ -101,7 +101,7 @@ See **[docs/RELEASING.md](docs/RELEASING.md)**. Tag `vX.Y.Z` and push it. GitHub
 
 ## Safety and content
 
-Ember is for adults. Public photos must be non-explicit, and private content is shared only by explicit, revocable consent. Demo data uses CC0 DiceBear illustrations: no photos of real people, nothing explicit.
+Ember is for adults. Public photos must be non-explicit, and private content is shared only by explicit, revocable consent. Demo profiles use 60 AI-generated portraits of fictional adults (firebase/seed/portraits, made with Figma AI) and CC0 DiceBear illustrations. None of them are real people, and nothing is explicit.
 
 ## License
 
