@@ -2,11 +2,22 @@ package io.github.arnavdugad.ember.ui.chat
 
 import android.net.Uri
 import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,37 +27,61 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.toClipEntry
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -54,6 +89,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.arnavdugad.ember.core.designsystem.AmbientGlow
 import io.github.arnavdugad.ember.core.designsystem.DemoBadge
+import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassButton
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
@@ -65,6 +101,7 @@ import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
 import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
+import io.github.arnavdugad.ember.core.designsystem.shimmer
 import io.github.arnavdugad.ember.core.image.EmberImage
 import io.github.arnavdugad.ember.data.ai.AiConfig
 import io.github.arnavdugad.ember.data.model.Match
@@ -74,6 +111,10 @@ import io.github.arnavdugad.ember.ui.main.sharedPhoto
 import io.github.arnavdugad.ember.ui.safety.SafetySheet
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /** How many messages count as "early on" for the phone-number hint. */
 private const val EARLY_MESSAGES = 5
@@ -93,6 +134,7 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val ai by viewModel.ai.collectAsStateWithLifecycle()
     val wingman by viewModel.wingman.collectAsStateWithLifecycle()
+    val prefs by viewModel.prefs.collectAsStateWithLifecycle()
     val colors = EmberTheme.colors
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
@@ -100,38 +142,56 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
     var gameOpen by remember { mutableStateOf(false) }
     var dateOpen by remember { mutableStateOf(false) }
     var safetyOpen by remember { mutableStateOf(false) }
+    var optionsOpen by remember { mutableStateOf(false) }
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var searchIndex by remember { mutableIntStateOf(0) }
     var pendingPhoto by rememberSaveable { mutableStateOf<Uri?>(null) }
     val revealed = remember { mutableStateListOf<String>() }
     var toast by remember { mutableStateOf<String?>(null) }
     var reacting by remember { mutableStateOf<ReactionTarget?>(null) }
     var viewing by remember { mutableStateOf<Message?>(null) }
+    var info by remember { mutableStateOf<Message?>(null) }
     var highlightId by remember { mutableStateOf<String?>(null) }
     var bannerDismissedFor by rememberSaveable { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> pendingPhoto = uri }
     val voice = rememberVoicePlayer(onError = viewModel::showError)
     LaunchedEffect(ui.removed) { if (ui.removed) onRemoved() }
-    LaunchedEffect(messages?.firstOrNull()?.id) { if (listState.firstVisibleItemIndex <= 2) listState.animateScrollToItem(0) }
 
     val m = match
-    val list = messages.orEmpty()
+    // Event rows only show while screenshot alerts are on: the switch works both ways.
+    val list = remember(messages, prefs.screenshotAlerts) {
+        messages.orEmpty().let { all -> if (prefs.screenshotAlerts) all else all.filter { it.type != MessageType.Event } }
+    }
     val otherUid = m?.otherUid
     val myUid = m?.myUid.orEmpty()
     val arrivals = remember { BubbleArrivals() }
     val reduceMotion = rememberReduceMotion()
     // Noted during composition, so a new bubble already knows to pop on its first frame.
-    remember(messages) { messages?.let { arrivals.observe(it.map(Message::id), SystemClock.uptimeMillis()) } }
+    remember(messages, list) { messages?.let { arrivals.observe(list.map(Message::id), SystemClock.uptimeMillis()) } }
+
+    // Follow new messages while at the bottom, and always after sending one.
+    val newest = list.firstOrNull()
+    LaunchedEffect(newest?.id) {
+        val sentByMe = newest != null && newest.senderId != otherUid && newest.type != MessageType.Event
+        if (listState.firstVisibleItemIndex <= 2 || sentByMe) listState.animateScrollToItem(0)
+    }
 
     // Typing dots -> message: remember when the dots were last up, and let the next incoming
     // message that lands within the window grow out of them instead of popping in.
     var typingSeen by remember { mutableStateOf(false) }
     var typingSeenAt by remember { mutableLongStateOf(0L) }
+    var typingSince by remember { mutableLongStateOf(0L) }
     LaunchedEffect(typing) {
-        if (typing) typingSeen = true
+        if (typing) {
+            typingSeen = true
+            typingSince = SystemClock.uptimeMillis()
+        }
         if (typingSeen) typingSeenAt = SystemClock.uptimeMillis()
     }
     var morphId by remember { mutableStateOf<String?>(null) }
-    val newestIncoming = list.firstOrNull()?.takeIf { it.senderId == otherUid }?.id
+    val newestIncoming = newest?.takeIf { it.senderId == otherUid && it.type != MessageType.Event }?.id
     LaunchedEffect(newestIncoming) {
         if (newestIncoming != null && typingSeen && (typing || SystemClock.uptimeMillis() - typingSeenAt < MORPH_WINDOW_MS)) {
             morphId = newestIncoming
@@ -139,12 +199,65 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             morphId = null
         }
     }
-    val showTyping = typing && (morphId == null || list.firstOrNull()?.id != morphId)
+    val showTyping = typing && (morphId == null || newest?.id != morphId)
 
     // Safety nudge: the newest scam-shaped message from them, unless dismissed.
     val risky = remember(list, otherUid) {
-        list.asSequence().take(NUDGE_SCAN).firstOrNull { it.senderId == otherUid && SafetyNudges.isRisky(it.text) }?.id
+        list.asSequence().take(NUDGE_SCAN).firstOrNull { it.senderId == otherUid && !it.unsent && SafetyNudges.isRisky(it.text) }?.id
     }
+
+    val unsentIds = remember(list) { list.filter { it.unsent }.mapTo(HashSet()) { it.id } }
+    val replyingTo = ui.replyTo?.id
+    LaunchedEffect(unsentIds, replyingTo) { if (replyingTo != null && replyingTo in unsentIds) viewModel.cancelReply() }
+    // Photos from someone I haven't answered yet arrive blurred (all of them, with the switch on).
+    val firstReply = remember(list, myUid) { firstReplyAt(list, myUid) }
+
+    // Scrolling to a message: quotes, search results. Item 0 is the typing bubble while it shows.
+    val currentList by rememberUpdatedState(list)
+    val typingShown by rememberUpdatedState(showTyping)
+    val jumpTo: (String) -> Unit = remember {
+        { id ->
+            val index = currentList.indexOfFirst { it.id == id }
+            if (index < 0) {
+                toast = "That message is too far back"
+            } else {
+                scope.launch {
+                    listState.animateScrollToItem(index + if (typingShown) 1 else 0)
+                    highlightId = id
+                    delay(800)
+                    highlightId = null
+                }
+            }
+        }
+    }
+
+    // In-chat search: newest match first; the arrows walk back and forth through the rest.
+    val found = remember(list, query, searchOpen) { if (searchOpen) ChatSearch.matches(list, query) else emptyList() }
+    val currentFound by rememberUpdatedState(found)
+    LaunchedEffect(query, searchOpen) {
+        searchIndex = 0
+        if (!searchOpen) return@LaunchedEffect
+        delay(250)
+        currentFound.firstOrNull()?.let(jumpTo)
+    }
+    val closeSearch = {
+        searchOpen = false
+        query = ""
+    }
+    BackHandler(enabled = searchOpen, onBack = closeSearch)
+    fun stepSearch(by: Int) {
+        if (found.isEmpty()) return
+        searchIndex = (searchIndex + by).coerceIn(0, found.lastIndex)
+        jumpTo(found[searchIndex])
+    }
+
+    // Scrolled up: a button back to the latest, counting what arrived since.
+    val scrolledUp by remember { derivedStateOf { listState.firstVisibleItemIndex > 2 } }
+    var anchorId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(scrolledUp) { anchorId = if (scrolledUp) currentList.firstOrNull()?.id else null }
+    val unseen = if (scrolledUp) unseenSince(list, anchorId, otherUid) else 0
+
+    ScreenshotWatcher(enabled = prefs.screenshotAlerts && m != null, onScreenshot = { viewModel.screenshotTaken() })
 
     val actions = remember(viewModel) {
         BubbleActions(
@@ -155,85 +268,91 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             },
             onReply = viewModel::replyTo,
             onReact = viewModel::react,
-            onQuoteClick = { id ->
-                val all = viewModel.messages.value.orEmpty()
-                val index = all.indexOfFirst { it.id == id }
-                if (index < 0) {
-                    toast = "That message is too far back"
-                } else {
-                    scope.launch {
-                        // Item 0 is the typing bubble while it shows.
-                        val offset = if (listState.layoutInfo.visibleItemsInfo.any { it.key == "typing" }) 1 else 0
-                        listState.animateScrollToItem(index + offset)
-                        highlightId = id
-                        delay(800)
-                        highlightId = null
-                    }
-                }
-            },
+            onHeart = viewModel::heart,
+            onQuoteClick = jumpTo,
             onOpenViewOnce = { viewing = it },
             onPlayVoice = { message -> voice.toggle(message.id) { viewModel.voiceFile(message) } },
             onQuickReply = viewModel::quickReply,
         )
     }
 
+    val zone = remember { ZoneId.systemDefault() }
+    val today = LocalDate.now(zone)
     GlassScene(Modifier.fillMaxSize(), backdrop = { AmbientGlow(intensity = 0.5f) }) {
         Column(Modifier.fillMaxSize().imePadding()) {
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 110.dp, bottom = 12.dp),
-                // reverseLayout needs bottom alignment, or a short thread hugs the top.
-                verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
-            ) {
-                if (showTyping) {
-                    // Vanishes at once: when a message replaces it, that message grows out of the dots.
-                    item(key = "typing") { TypingBubble(Modifier.animateItem(fadeOutSpec = null)) }
-                }
-                val lastMineId = list.firstOrNull { it.senderId != otherUid }?.id
-                itemsIndexed(list, key = { _, it -> it.id }) { index, message ->
-                    val mine = message.senderId != otherUid
-                    // The list is newest-first, so the message shown above this one is index + 1.
-                    val previous = list.getOrNull(index + 1)
-                    val gap = if (previous?.createdAt != null && message.createdAt != null) {
-                        java.time.Duration.between(previous.createdAt, message.createdAt)
-                    } else {
-                        null
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 110.dp, bottom = 12.dp),
+                    // reverseLayout needs bottom alignment, or a short thread hugs the top.
+                    verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
+                ) {
+                    if (showTyping) {
+                        // Vanishes at once: when a message replaces it, that message grows out of the dots.
+                        item(key = "typing") {
+                            TypingBubble(Modifier.animateItem(fadeOutSpec = null).padding(top = 8.dp), startedAt = typingSince, still = reduceMotion)
+                        }
                     }
-                    val showTime = previous == null || (gap != null && gap.toMinutes() >= 60)
-                    val grouped = !showTime && previous.senderId == message.senderId && (gap == null || gap.toMinutes() < 3)
-                    MessageBubble(
-                        message = message,
-                        mine = mine,
-                        myUid = myUid,
-                        otherName = m?.otherName.orEmpty(),
-                        revealed = mine || message.id in revealed,
-                        receipt = when {
-                            mine && message.pending -> "Sending…"
-                            message.id == lastMineId && m != null -> receiptFor(message, m)
-                            else -> null
-                        },
-                        voice = voice,
-                        actions = actions,
-                        timeLabel = if (showTime) message.createdAt?.let(::chatTime) else null,
-                        topGap = if (grouped) 0.dp else 8.dp,
-                        morphFromTyping = message.id == morphId,
-                        highlighted = message.id == highlightId,
-                        // Offer the quick answers until I've said anything after their suggestion.
-                        showDateReplies = !mine && message.type == MessageType.Date && list.subList(0, index).none { it.senderId != otherUid },
-                        // New arrivals pop, unless theirs is about to grow out of the typing dots.
-                        popIn = !reduceMotion && remember(message.id) {
-                            arrivals.consume(message.id) && (mine || !typingSeen || !typing && SystemClock.uptimeMillis() - typingSeenAt >= MORPH_WINDOW_MS)
-                        },
-                        modifier = Modifier.animateItem(
-                            placementSpec = spring(dampingRatio = 0.85f, stiffness = 420f, visibilityThreshold = IntOffset.VisibilityThreshold),
-                        ),
-                    )
+                    val lastMineId = list.firstOrNull { it.senderId != otherUid && it.type != MessageType.Event && !it.unsent }?.id
+                    itemsIndexed(list, key = { _, it -> it.id }) { index, message ->
+                        val mine = message.senderId != otherUid
+                        // The list is newest-first, so the message shown above this one is index + 1.
+                        val previous = list.getOrNull(index + 1)
+                        val gap = if (previous?.createdAt != null && message.createdAt != null) {
+                            java.time.Duration.between(previous.createdAt, message.createdAt)
+                        } else {
+                            null
+                        }
+                        val newDay = startsNewDay(previous?.createdAt, message.createdAt, zone)
+                        val showTime = !newDay && (previous == null || (gap != null && gap.toMinutes() >= 60))
+                        val grouped = !newDay && !showTime && previous != null && previous.senderId == message.senderId &&
+                            previous.type != MessageType.Event && message.type != MessageType.Event && (gap == null || gap.toMinutes() < 3)
+                        MessageBubble(
+                            message = message,
+                            mine = mine,
+                            myUid = myUid,
+                            otherName = m?.otherName.orEmpty(),
+                            revealed = mine || message.id in revealed || !veilsPhoto(message.createdAt, firstReply, prefs.blurAllPhotos),
+                            receipt = when {
+                                mine && message.pending && message.type != MessageType.Event -> "Sending…"
+                                message.id == lastMineId && m != null -> receiptFor(message, m)
+                                else -> null
+                            },
+                            voice = voice,
+                            actions = actions,
+                            dayLabel = if (newDay) message.createdAt?.let { "${dayLabel(it.atZone(zone).toLocalDate(), today)} · ${clockTime(it)}" } else null,
+                            timeLabel = if (showTime) message.createdAt?.let(::clockTime) else null,
+                            topGap = if (grouped) 0.dp else 8.dp,
+                            morphFromTyping = message.id == morphId,
+                            highlighted = message.id == highlightId,
+                            // Offer the quick answers until I've said anything after their suggestion.
+                            showDateReplies = !mine && message.type == MessageType.Date && list.subList(0, index).none { it.senderId != otherUid },
+                            // New arrivals pop, unless theirs is about to grow out of the typing dots.
+                            popIn = !reduceMotion && remember(message.id) {
+                                arrivals.consume(message.id) && (mine || !typingSeen || !typing && SystemClock.uptimeMillis() - typingSeenAt >= MORPH_WINDOW_MS)
+                            },
+                            searchQuery = if (searchOpen) query else null,
+                            quoteUnsent = message.replyTo?.let { it.id in unsentIds } == true,
+                            reduceMotion = reduceMotion,
+                            modifier = Modifier.animateItem(
+                                placementSpec = spring(dampingRatio = 0.85f, stiffness = 420f, visibilityThreshold = IntOffset.VisibilityThreshold),
+                            ),
+                        )
+                    }
+                    if (messages == null) {
+                        item(key = "loading") { LoadingBubbles() }
+                    } else if (list.isEmpty() && m != null) {
+                        item { ChatIntro(m, ai, onPlay = { gameOpen = true }, onAiSettings = onAiSettings) }
+                    }
                 }
-                if (messages != null && list.isEmpty() && m != null) {
-                    item { ChatIntro(m, ai, onPlay = { gameOpen = true }, onAiSettings = onAiSettings) }
-                }
+                ScrollToLatest(
+                    visible = scrolledUp,
+                    unseen = unseen,
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 10.dp),
+                )
             }
             if (ai.usable && m != null) {
                 WingmanChip(onClick = viewModel::suggestReplies)
@@ -266,7 +385,34 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
             )
         }
 
-        ChatTopBar(m, ai, typing, onBack = onBack, onProfile = { m?.let { onOpenProfile(it.otherUid) } }, onMenu = { safetyOpen = true })
+        // Faded rather than removed while searching, so its photo keeps its shared-element link.
+        val topBarAlpha by animateFloatAsState(if (searchOpen) 0f else 1f, label = "topBar")
+        Box(Modifier.graphicsLayer { alpha = topBarAlpha }.then(if (searchOpen) Modifier.clearAndSetSemantics {} else Modifier)) {
+            ChatTopBar(
+                m,
+                ai,
+                typing,
+                onBack = onBack,
+                onProfile = { m?.let { onOpenProfile(it.otherUid) } },
+                onSearch = { searchOpen = true },
+                onMenu = { optionsOpen = true },
+            )
+        }
+        AnimatedVisibility(
+            visible = searchOpen,
+            enter = fadeIn() + slideInVertically { -it / 3 },
+            exit = fadeOut() + slideOutVertically { -it / 3 },
+        ) {
+            ChatSearchBar(
+                query = query,
+                onQuery = { query = it },
+                found = found.size,
+                current = searchIndex,
+                onOlder = { stepSearch(1) },
+                onNewer = { stepSearch(-1) },
+                onClose = closeSearch,
+            )
+        }
 
         ui.error?.let { error ->
             LaunchedEffect(error) {
@@ -285,26 +431,48 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
         }
 
         reacting?.let { target ->
-            val text = target.message.text.takeIf { target.message.type == MessageType.Text }
+            val message = target.message
+            val close = { reacting = null }
+            val menu = buildList {
+                add(
+                    MenuAction("Reply", Icons.AutoMirrored.Rounded.Reply) {
+                        viewModel.replyTo(message)
+                        close()
+                    },
+                )
+                copyText(message)?.let { text ->
+                    add(
+                        MenuAction("Copy", Icons.Rounded.ContentCopy) {
+                            scope.launch { clipboard.setClipEntry(android.content.ClipData.newPlainText("message", text).toClipEntry()) }
+                            toast = "Copied"
+                            close()
+                        },
+                    )
+                }
+                add(
+                    MenuAction("Message info", Icons.Rounded.Info) {
+                        info = message
+                        close()
+                    },
+                )
+                if (viewModel.canUnsend(message)) {
+                    add(
+                        MenuAction("Unsend", Icons.Rounded.DeleteOutline, destructive = true) {
+                            viewModel.unsend(message)
+                            close()
+                        },
+                    )
+                }
+            }
             ReactionOverlay(
                 target = target,
-                myReaction = target.message.reactions[myUid],
+                myReaction = message.reactions[myUid],
                 onReact = { emoji ->
-                    viewModel.react(target.message, emoji)
-                    reacting = null
+                    viewModel.react(message, emoji)
+                    close()
                 },
-                onReply = {
-                    viewModel.replyTo(target.message)
-                    reacting = null
-                },
-                onCopy = text?.let {
-                    {
-                        scope.launch { clipboard.setClipEntry(android.content.ClipData.newPlainText("message", it).toClipEntry()) }
-                        toast = "Copied"
-                        reacting = null
-                    }
-                },
-                onDismiss = { reacting = null },
+                menu = menu,
+                onDismiss = close,
             )
         }
 
@@ -334,6 +502,31 @@ fun ChatScreen(matchId: String, onBack: () -> Unit, onOpenProfile: (String) -> U
                 pendingPhoto = null
             },
             onDismiss = { pendingPhoto = null },
+        )
+        ChatOptionsSheet(
+            visible = optionsOpen,
+            name = m?.otherName ?: "your match",
+            prefs = prefs,
+            receiptsOn = matchId !in prefs.receiptsOff,
+            onSearch = {
+                optionsOpen = false
+                searchOpen = true
+            },
+            onReadReceipts = viewModel::setReadReceipts,
+            onBlurAllPhotos = viewModel::setBlurAllPhotos,
+            onScreenshotAlerts = viewModel::setScreenshotAlerts,
+            onSafety = {
+                optionsOpen = false
+                safetyOpen = true
+            },
+            onDismiss = { optionsOpen = false },
+        )
+        MessageInfoSheet(
+            message = info,
+            myUid = myUid,
+            otherName = m?.otherName ?: "your match",
+            otherLastRead = m?.otherLastRead,
+            onDismiss = { info = null },
         )
         SafetySheet(
             visible = safetyOpen,
@@ -384,8 +577,112 @@ private fun receiptFor(message: Message, match: Match): String = when {
     else -> "Delivered"
 }
 
+/** A round "back to the latest" button, with how many of their messages arrived since. */
 @Composable
-private fun ChatTopBar(match: Match?, ai: AiConfig, typing: Boolean, onBack: () -> Unit, onProfile: () -> Unit, onMenu: () -> Unit) {
+private fun ScrollToLatest(visible: Boolean, unseen: Int, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = EmberTheme.colors
+    AnimatedVisibility(visible, modifier, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+        Box {
+            GlassSurface(
+                Modifier
+                    .size(44.dp)
+                    .pressable(onClick = onClick, pressedScale = 0.88f)
+                    .semantics { contentDescription = if (unseen > 0) "$unseen new, jump to the latest message" else "Jump to the latest message" },
+                shape = CircleShape,
+                style = GlassDefaults.chrome(),
+                elevated = true,
+            ) {
+                Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, tint = colors.textPrimary, modifier = Modifier.align(Alignment.Center).size(24.dp))
+            }
+            if (unseen > 0) {
+                Text(
+                    if (unseen > 99) "99+" else "$unseen",
+                    style = EmberTheme.type.caption,
+                    color = colors.onAccent,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .background(colors.accentBrush, PillShape)
+                        .padding(horizontal = 7.dp, vertical = 1.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Over the top bar while searching: the field, "2 of 5", and arrows to older and newer matches. */
+@Composable
+private fun ChatSearchBar(query: String, onQuery: (String) -> Unit, found: Int, current: Int, onOlder: () -> Unit, onNewer: () -> Unit, onClose: () -> Unit) {
+    val colors = EmberTheme.colors
+    val focus = remember { FocusRequester() }
+    // Opens with the keyboard up; harmless if the field isn't attached yet.
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .glass(RectangleShape, GlassDefaults.chrome(), LocalHazeState.current)
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        GlassIconButton(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Close search", onClick = onClose)
+        Spacer(Modifier.width(10.dp))
+        Row(
+            Modifier
+                .weight(1f)
+                .height(42.dp)
+                .glass(PillShape, GlassDefaults.surface(), LocalHazeState.current)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Search, contentDescription = null, tint = colors.textTertiary, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            BasicTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = EmberTheme.type.body.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onOlder() }),
+                modifier = Modifier.weight(1f).focusRequester(focus),
+                decorationBox = { inner ->
+                    Box {
+                        if (query.isEmpty()) Text("Search this chat", style = EmberTheme.type.body, color = colors.textTertiary)
+                        inner()
+                    }
+                },
+            )
+            if (query.isNotBlank()) {
+                Text(
+                    if (found == 0) "No results" else "${current + 1} of $found",
+                    style = EmberTheme.type.caption,
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(start = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+        }
+        Spacer(Modifier.width(6.dp))
+        GlassIconButton(Icons.Rounded.KeyboardArrowUp, contentDescription = "Older match", onClick = onOlder, size = 40.dp)
+        Spacer(Modifier.width(4.dp))
+        GlassIconButton(Icons.Rounded.KeyboardArrowDown, contentDescription = "Newer match", onClick = onNewer, size = 40.dp)
+    }
+}
+
+/** Placeholder bubbles while the thread loads. */
+@Composable
+private fun LoadingBubbles() {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).semantics { contentDescription = "Loading messages" }) {
+        listOf(160 to false, 210 to true, 120 to false, 180 to true).forEach { (width, mine) ->
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                Box(Modifier.size(width = width.dp, height = 40.dp).shimmer(EmberShapes.bubble))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatTopBar(match: Match?, ai: AiConfig, typing: Boolean, onBack: () -> Unit, onProfile: () -> Unit, onSearch: () -> Unit, onMenu: () -> Unit) {
     val colors = EmberTheme.colors
     Row(
         Modifier
@@ -427,7 +724,9 @@ private fun ChatTopBar(match: Match?, ai: AiConfig, typing: Boolean, onBack: () 
                 )
             }
         }
-        GlassIconButton(Icons.Rounded.MoreHoriz, contentDescription = "Safety options", onClick = onMenu)
+        GlassIconButton(Icons.Rounded.Search, contentDescription = "Search in chat", onClick = onSearch)
+        Spacer(Modifier.width(8.dp))
+        GlassIconButton(Icons.Rounded.MoreHoriz, contentDescription = "Chat options", onClick = onMenu)
     }
 }
 
@@ -460,15 +759,6 @@ private fun ChatIntro(match: Match, ai: AiConfig, onPlay: () -> Unit, onAiSettin
     }
 }
 
-/** "9:41 PM" today, "Tue 9:41 PM" this week, "12 Oct, 9:41 PM" before that. */
-private fun chatTime(instant: java.time.Instant): String {
-    val zone = java.time.ZoneId.systemDefault()
-    val at = instant.atZone(zone)
-    val today = java.time.LocalDate.now(zone)
-    val pattern = when {
-        at.toLocalDate() == today -> "h:mm a"
-        at.toLocalDate().isAfter(today.minusDays(6)) -> "EEE h:mm a"
-        else -> "d MMM, h:mm a"
-    }
-    return at.format(java.time.format.DateTimeFormatter.ofPattern(pattern))
-}
+/** "9:41 PM": the day itself is on the separator above. */
+private fun clockTime(instant: Instant): String =
+    instant.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("h:mm a"))

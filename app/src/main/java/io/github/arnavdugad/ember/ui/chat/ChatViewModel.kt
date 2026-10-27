@@ -12,6 +12,7 @@ import io.github.arnavdugad.ember.data.ai.AiChatEngine
 import io.github.arnavdugad.ember.data.ai.AiConfig
 import io.github.arnavdugad.ember.data.ai.AiSettingsRepository
 import io.github.arnavdugad.ember.data.model.Catalog
+import io.github.arnavdugad.ember.data.model.ChatEvent
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.DatePlanner
 import io.github.arnavdugad.ember.data.model.GameCard
@@ -25,6 +26,8 @@ import io.github.arnavdugad.ember.data.model.VoiceClip
 import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
+import io.github.arnavdugad.ember.data.settings.ChatPrefs
+import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import io.github.arnavdugad.ember.ui.matches.UnmatchQueue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,6 +46,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.time.Instant
 
 data class ChatUiState(
     val uploading: Boolean = false,
@@ -63,6 +67,7 @@ class ChatViewModel @AssistedInject constructor(
     private val engine: AiChatEngine,
     private val assist: AiAssist,
     aiSettings: AiSettingsRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
     @AssistedFactory
     interface Factory {
@@ -95,12 +100,17 @@ class ChatViewModel @AssistedInject constructor(
     private val _wingman = MutableStateFlow<WingmanState>(WingmanState.Closed)
     val wingman: StateFlow<WingmanState> = _wingman.asStateFlow()
 
+    /** Read receipts, photo blurring and screenshot alerts. Device-local. */
+    val prefs: StateFlow<ChatPrefs> = settings.chatPrefs.catch { emit(ChatPrefs()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatPrefs())
+
     private val _ui = MutableStateFlow(ChatUiState())
     val ui: StateFlow<ChatUiState> = _ui.asStateFlow()
 
     private var typingJob: Job? = null
     private var typingSent = false
     private val openedViewOnce = mutableSetOf<String>()
+    private var lastScreenshotAlert = 0L
 
     init {
         // Read receipts: mark read whenever new messages arrive while the chat is open.
@@ -186,6 +196,42 @@ class ChatViewModel @AssistedInject constructor(
 
     fun sendDate(idea: DateIdea) = launch { repo.sendDate(matchId, idea) }
 
+    /** Double-tap: always a heart, so a second double-tap doesn't take it back. */
+    fun heart(message: Message) {
+        val mine = match.value?.myUid?.let { message.reactions[it] }
+        if (mine != HEART) launch { repo.react(matchId, message.id, HEART) }
+    }
+
+    fun canUnsend(message: Message): Boolean = match.value?.myUid?.let { message.canUnsend(it, Instant.now()) } == true
+
+    fun unsend(message: Message) {
+        if (_ui.value.replyTo?.id == message.id) cancelReply()
+        launch { repo.unsend(matchId, message) }
+    }
+
+    fun setReadReceipts(enabled: Boolean) {
+        viewModelScope.launch {
+            settings.setReadReceipts(matchId, enabled)
+            // Back on: the other person catches up at once.
+            if (enabled) repo.markRead(matchId)
+        }
+    }
+
+    fun setBlurAllPhotos(enabled: Boolean) {
+        viewModelScope.launch { settings.setBlurAllPhotos(enabled) }
+    }
+
+    fun setScreenshotAlerts(enabled: Boolean) {
+        viewModelScope.launch { settings.setScreenshotAlerts(enabled) }
+    }
+
+    /** At most one alert per [SCREENSHOT_ALERT_GAP_MS], so a burst of screenshots is one row. */
+    fun screenshotTaken(now: Long = System.currentTimeMillis()) {
+        if (!prefs.value.screenshotAlerts || now - lastScreenshotAlert < SCREENSHOT_ALERT_GAP_MS) return
+        lastScreenshotAlert = now
+        viewModelScope.launch { runCatching { repo.sendEvent(matchId, ChatEvent.Screenshot) } }
+    }
+
     /** Tapping the reaction you already gave takes it back. */
     fun react(message: Message, emoji: String) {
         val mine = match.value?.myUid?.let { message.reactions[it] }
@@ -248,6 +294,11 @@ class ChatViewModel @AssistedInject constructor(
                 )
             }
         }
+    }
+
+    private companion object {
+        const val HEART = "❤️"
+        const val SCREENSHOT_ALERT_GAP_MS = 10_000L
     }
 
     override fun onCleared() {

@@ -65,7 +65,7 @@ private class Spark(val angle: Float, val speed: Float, val size: Float, val lif
  * arcing under gravity and burning out. Replays whenever [key] changes.
  */
 @Composable
-fun EmberBurst(key: Any, modifier: Modifier = Modifier, origin: Offset = Offset(0.5f, 0.42f), count: Int = 90) {
+fun EmberBurst(key: Any, modifier: Modifier = Modifier, origin: Offset = Offset(0.5f, 0.42f), count: Int = 90, durationMs: Int = 2_200) {
     val colors = EmberTheme.colors
     val palette = listOf(colors.accentWarm, colors.gradient[1], colors.accentAlt, Color.White)
     val sparks = remember(key) {
@@ -82,7 +82,7 @@ fun EmberBurst(key: Any, modifier: Modifier = Modifier, origin: Offset = Offset(
         }
     }
     val progress = remember(key) { Animatable(0f) }
-    LaunchedEffect(key) { progress.animateTo(1f, tween(2_200, easing = LinearEasing)) }
+    LaunchedEffect(key) { progress.animateTo(1f, tween(durationMs, easing = LinearEasing)) }
     Canvas(modifier) {
         val t = progress.value
         if (t >= 1f) return@Canvas

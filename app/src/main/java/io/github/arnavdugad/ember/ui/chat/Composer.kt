@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -55,6 +56,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +64,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -72,6 +75,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import io.github.arnavdugad.ember.core.designsystem.EmberBurst
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
 import io.github.arnavdugad.ember.core.designsystem.GlassDefaults
@@ -80,6 +84,7 @@ import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
 import io.github.arnavdugad.ember.core.designsystem.PillShape
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
+import io.github.arnavdugad.ember.core.designsystem.rememberReduceMotion
 import io.github.arnavdugad.ember.core.media.VoiceRecorder
 import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.VoiceClip
@@ -120,6 +125,8 @@ internal fun Composer(
     var level by remember { mutableFloatStateOf(0f) }
     // How far towards cancelling the user has slid, 0 to 1.
     var slide by remember { mutableFloatStateOf(0f) }
+    val reduceMotion = rememberReduceMotion()
+    var bursts by remember { mutableIntStateOf(0) }
     DisposableEffect(recorder) { onDispose { recorder.cancel() } }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         onNotice(if (granted) "Ready. Hold the mic to record." else "Ember needs the microphone to record voice notes.")
@@ -167,93 +174,112 @@ internal fun Composer(
                 )
             }
         }
-        Row(
-            Modifier
-                .glass(PillShape, GlassDefaults.chrome(), LocalHazeState.current, elevated = true)
-                .padding(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (recording) {
-                RecordingStatus(elapsedMs = elapsedMs, slide = slide, modifier = Modifier.weight(1f))
-            } else {
-                ComposerIcon(Icons.Rounded.Casino, "Truth or Dare", onGame)
-                if (uploading) {
-                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = colors.accent, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
-                    }
+        Box(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier
+                    .glass(PillShape, GlassDefaults.chrome(), LocalHazeState.current, elevated = true)
+                    .padding(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (recording) {
+                    RecordingStatus(elapsedMs = elapsedMs, slide = slide, modifier = Modifier.weight(1f))
                 } else {
-                    ComposerIcon(Icons.Rounded.Image, "Send a photo", onPhoto)
-                }
-                ComposerIcon(Icons.Rounded.Event, "Plan a date", onPlanDate)
-                BasicTextField(
-                    value = text,
-                    onValueChange = onText,
-                    textStyle = EmberTheme.type.body.copy(color = colors.textPrimary),
-                    cursorBrush = SolidColor(colors.accent),
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 10.dp),
-                    decorationBox = { inner ->
-                        Box {
-                            if (text.isEmpty()) Text("Message", style = EmberTheme.type.body, color = colors.textTertiary)
-                            inner()
+                    ComposerIcon(Icons.Rounded.Casino, "Truth or Dare", onGame)
+                    if (uploading) {
+                        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = colors.accent, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
                         }
-                    },
-                )
-            }
-            AnimatedContent(
-                targetState = text.isNotBlank(),
-                transitionSpec = { (scaleIn() + fadeIn()) togetherWith (scaleOut() + fadeOut()) },
-                label = "sendOrMic",
-            ) { canSend ->
-                if (canSend) {
-                    Box(
-                        Modifier
-                            .size(42.dp)
-                            .pressable(onClick = onSend, pressedScale = 0.85f)
-                            .background(colors.accentBrush, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp))
+                    } else {
+                        ComposerIcon(Icons.Rounded.Image, "Send a photo", onPhoto)
                     }
-                } else {
-                    MicButton(
-                        recording = recording,
-                        level = level,
-                        onPress = {
-                            when {
-                                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED -> {
-                                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                                    false
-                                }
-                                recorder.start() -> {
-                                    haptics.press()
-                                    elapsedMs = 0L
-                                    level = 0f
-                                    slide = 0f
-                                    recording = true
-                                    true
-                                }
-                                else -> {
-                                    onNotice("Couldn't start recording. Is another app using the microphone?")
-                                    false
-                                }
-                            }
-                        },
-                        onSlide = { progress ->
-                            if (progress >= 0.5f && slide < 0.5f) haptics.tick()
-                            slide = progress
-                        },
-                        onRelease = ::finishRecording,
-                        onCancel = {
-                            if (recording) {
-                                recording = false
-                                recorder.cancel()
-                                haptics.reject()
+                    ComposerIcon(Icons.Rounded.Event, "Plan a date", onPlanDate)
+                    BasicTextField(
+                        value = text,
+                        onValueChange = onText,
+                        textStyle = EmberTheme.type.body.copy(color = colors.textPrimary),
+                        cursorBrush = SolidColor(colors.accent),
+                        maxLines = 5,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 10.dp),
+                        decorationBox = { inner ->
+                            Box {
+                                if (text.isEmpty()) Text("Message", style = EmberTheme.type.body, color = colors.textTertiary)
+                                inner()
                             }
                         },
                     )
                 }
+                AnimatedContent(
+                    targetState = text.isNotBlank(),
+                    transitionSpec = { (scaleIn() + fadeIn()) togetherWith (scaleOut() + fadeOut()) },
+                    label = "sendOrMic",
+                ) { canSend ->
+                    if (canSend) {
+                        Box(
+                            Modifier
+                                .size(42.dp)
+                                .pressable(
+                                    onClick = {
+                                        if (!reduceMotion) bursts++
+                                        onSend()
+                                    },
+                                    pressedScale = 0.85f,
+                                )
+                                .background(colors.accentBrush, CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    } else {
+                        MicButton(
+                            recording = recording,
+                            level = level,
+                            onPress = {
+                                when {
+                                    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED -> {
+                                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                                        false
+                                    }
+                                    recorder.start() -> {
+                                        haptics.press()
+                                        elapsedMs = 0L
+                                        level = 0f
+                                        slide = 0f
+                                        recording = true
+                                        true
+                                    }
+                                    else -> {
+                                        onNotice("Couldn't start recording. Is another app using the microphone?")
+                                        false
+                                    }
+                                }
+                            },
+                            onSlide = { progress ->
+                                if (progress >= 0.5f && slide < 0.5f) haptics.tick()
+                                slide = progress
+                            },
+                            onRelease = ::finishRecording,
+                            onCancel = {
+                                if (recording) {
+                                    recording = false
+                                    recorder.cancel()
+                                    haptics.reject()
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            if (bursts > 0) {
+                // A few embers thrown off the send button as the message leaves. Centred on it: the
+                // button's centre sits 27 dp in from the bar's bottom-end corner.
+                EmberBurst(
+                    key = bursts,
+                    modifier = Modifier.align(Alignment.BottomEnd).offset(x = 33.dp, y = 33.dp).size(120.dp),
+                    origin = Offset(0.5f, 0.5f),
+                    count = 22,
+                    durationMs = 900,
+                )
             }
         }
     }

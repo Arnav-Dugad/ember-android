@@ -122,7 +122,10 @@ deletion); never updated.
     user is a demo profile with `demoMeta/{other}.likesBack == true` and `users/{other}/likedBy/{me}` exists;
   - and neither user has blocked the other.
 - **Update:** a participant may change only `lastRead.{self}` (`<= request.time`) and/or
-  `lastMessage` (with `senderId == self`, `sentAt == request.time`).
+  `lastMessage` (with `senderId == self`, `sentAt == request.time`). The one other `lastMessage`
+  write is the unsend swap (see "Unsend" below): when the current preview is my own and under
+  15 minutes old, I may replace it with `{text: "Message unsent", senderId: self, type: "text",
+  sentAt: <unchanged>}`, so the chat neither jumps up the list nor turns unread.
 - **Delete:** any participant (unmatch).
 - **Read:** participants only.
 
@@ -130,8 +133,8 @@ deletion); never updated.
 | field | type | notes |
 |---|---|---|
 | `senderId` | string | `== auth.uid` |
-| `type` | string | `text`, `image`, `game`, `voice`, `date` |
-| `text` | string | at most 2000; at least 1 for `text`. Images may carry a caption, dates carry the title |
+| `type` | string | `text`, `image`, `game`, `voice`, `date`, or `event` (see "Event rows") |
+| `text` | string | at most 2000; at least 1 for `text`. Images may carry a caption, dates carry the title, event rows their fixed fallback text |
 | `imageId` | string or null | required for `image` (the image doc must exist after the write), null otherwise |
 | `imageBlurhash` | string or null | at most 100 chars |
 | `game` | `{mode: "truth"\|"dare", prompt (<= 300)}` or null | required for `game`, null otherwise |
@@ -142,6 +145,8 @@ deletion); never updated.
 | `date` | `{title (1..80), detail (<= 200), emoji (<= 16)}` or null | required for `date`, null otherwise |
 | `replyTo` | `{id, senderId, text (<= 120), type}` or null, optional | `senderId` is one of the match's users |
 | `reactions` | map uid -> emoji, optional | never written on create; see updates |
+| `event` | string, `event` rows only | one of the event codes below; absent on every other type |
+| `unsentAt` | timestamp, optional | never written on create; set when the sender unsends it |
 | `createdAt` | timestamp | `== request.time` |
 
 - **Create:** participants, while the match exists and neither has blocked the other. Unknown
@@ -152,7 +157,49 @@ deletion); never updated.
     delete it), while neither has blocked the other.
   - **Open a view-once photo:** the recipient (not the sender) of a `viewOnce` message sets
     `viewedAt == request.time`, once. In the same batch they delete the image doc.
+  - **Unsend:** see below.
 - **Delete:** participants (unmatch cleanup).
+
+#### Unsend (tombstone)
+
+The sender may unsend their own message for **15 minutes** after `createdAt`, once. The message
+becomes a tombstone rather than disappearing:
+
+- After the write the doc holds exactly `senderId` and `createdAt` (both unchanged),
+  `type == "text"`, `text == "Message unsent"` and `unsentAt == request.time`. Every other field
+  (`replyTo`, `reactions`, `imageId`, `audioId`, `date`, ...) must be gone, so a tombstone can
+  never double as an edit. Event rows can't be unsent; a tombstone can't be unsent again.
+- In the same batch the app deletes the message's chat image or voice note (participants may
+  delete those anyway) and, if it was the chat's latest, swaps the preview as described under
+  `matches/{matchId}`.
+- Why a tombstone and not a hard delete: the other person may already have seen the message (or
+  its notification), so a silent disappearance would read as gaslighting; replies that quoted it
+  keep making sense (the app shows their quote as "Message unsent" too); and a pinned shape is
+  something the rules can check, whereas `delete` has to stay open to both participants for the
+  client-side unmatch cleanup. App versions without unsend just see a text message saying
+  "Message unsent".
+- Unsending needs a connection: a queued write could reach the server after the window and be
+  rejected after the app had already shown it as unsent.
+
+#### Event rows
+
+`type == "event"` is a centred system row, e.g. "Arjun took a screenshot". The rules accept only
+a fixed list of codes, each with a fixed `text`, and nothing else attached (`replyTo`, `viewOnce`,
+image, game, voice and date fields must be absent or null):
+
+| `event` | `text` (the fallback older app versions show as a plain message) |
+|---|---|
+| `screenshot` | `Took a screenshot of the chat` |
+
+Event rows never become `lastMessage` (its `type` must be one of the five message types) and
+can't be quoted, so they never notify, reorder the chat list or mark it unread. Older app
+versions map the unknown type to text (`MessageType.of` falls back to `Text`) and show the
+fallback text in an ordinary bubble.
+
+- **Screenshot alerts** (Android 14+, `Activity.ScreenCaptureCallback` while a chat is open,
+  permission `DETECT_SCREEN_CAPTURE`): at most one row per 10 seconds. A device-local switch
+  ("Screenshot alerts", on by default) turns both directions off: the app stops posting rows for
+  my screenshots and hides the rows the other person's app posts.
 
 Sending never waits for the network: the client commits the batch (message plus the match's
 `lastMessage`) into Firestore's offline cache and shows "Sending…" while the snapshot reports
@@ -365,6 +412,28 @@ Reasons: `fake_profile`, `inappropriate_photos`, `harassment`, `underage`, `spam
   - **Expiry and cleanup:** games not live (ended, or 24 h without a write) are hidden. Opening
     Matches or the game deletes them: any member deletes the moves, then the game doc. Invitees
     of a dead game decline.
+
+## Chat privacy switches (device only)
+
+The chat's ⋯ menu holds three switches. They live in the `ember_settings` DataStore on the phone
+and change no rules.
+
+- **Read receipts, per chat** (`chat_receipts_off`, a set of match ids). While off, the app stops
+  writing `lastRead.{me}` for that match, both when reading and in the send batch, so the other
+  person's "Read" never moves. My own unread badges keep working from a private marker,
+  `chat_private_read_{matchId}` (epoch millis: the later of now and the newest message's
+  `sentAt`), which the app merges into `myLastRead` (the later of the two) for the match list,
+  the chat and the notifier. Turning receipts back on writes `lastRead.{me}` at once.
+  - Why not a field in the match doc: rules decide who reads a *document*, not a field, so
+    anything stored there (a flag, or a private read marker) is visible to the other participant
+    to a modified client. Keeping the marker off Firestore is the only way it stays private on
+    the free plan. The trade-off: the switch and the marker don't follow you to another phone or
+    a reinstall (there, the chat simply has receipts on, and badges fall back to the last
+    `lastRead` the server has).
+- **Blur every photo** (`chat_blur_all_photos`, off by default). A received photo that arrived
+  before I'd sent anything in the chat starts blurred (BlurHash only, no pixels) under a "May be
+  sensitive · Tap to view" label until tapped; with this on, every received photo does.
+- **Screenshot alerts** (`chat_screenshot_alerts`, on by default): see "Event rows".
 
 ## AI chat
 

@@ -4,14 +4,19 @@ import android.content.Context
 import android.net.Uri
 import com.google.android.gms.tasks.Task
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.Timestamp
 import com.google.firebase.firestore.Blob
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.Source
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.arnavdugad.ember.core.media.VoiceFiles
 import io.github.arnavdugad.ember.core.util.Connectivity
+import io.github.arnavdugad.ember.data.model.ChatEvent
 import io.github.arnavdugad.ember.data.model.DateIdea
 import io.github.arnavdugad.ember.data.model.GameCard
 import io.github.arnavdugad.ember.data.model.GameMode
@@ -23,8 +28,11 @@ import io.github.arnavdugad.ember.data.model.Reactions
 import io.github.arnavdugad.ember.data.model.ReplyRef
 import io.github.arnavdugad.ember.data.model.VoiceClip
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -41,6 +49,7 @@ class FirebaseMatchRepository @Inject constructor(
     private val auth: FirebaseAuth,
     private val db: FirebaseFirestore,
     @ApplicationContext private val context: Context,
+    private val settings: SettingsRepository,
 ) : MatchRepository {
     private val matches get() = db.collection("matches")
 
@@ -50,20 +59,21 @@ class FirebaseMatchRepository @Inject constructor(
         } else {
             // Sorted on the client: an array-contains query with orderBy would need a composite index
             // on a field (lastMessage.sentAt) that is missing on brand-new matches.
-            matches.whereArrayContains("users", uid).snapshots().map { snap ->
-                snap?.documents.orEmpty().mapNotNull { it.toMatch(uid) }.newestFirst()
+            matches.whereArrayContains("users", uid).snapshots().combine(settings.privateReads) { snap, reads ->
+                snap?.documents.orEmpty().mapNotNull { it.toMatch(uid, reads) }.newestFirst()
             }
         }
     }
 
     override suspend fun fetchMatches(): List<Match> {
         val uid = auth.currentUser?.uid ?: return emptyList()
-        return matches.whereArrayContains("users", uid).get().await().documents.mapNotNull { it.toMatch(uid) }.newestFirst()
+        val reads = settings.privateReads.first()
+        return matches.whereArrayContains("users", uid).get().await().documents.mapNotNull { it.toMatch(uid, reads) }.newestFirst()
     }
 
     override fun observeMatch(matchId: String): Flow<Match?> {
         val uid = auth.requireUid()
-        return matches.document(matchId).snapshots().map { it?.toMatch(uid) }
+        return matches.document(matchId).snapshots().combine(settings.privateReads) { snap, reads -> snap?.toMatch(uid, reads) }
     }
 
     // Metadata changes are included so a message's "Sending…" clears the moment the server
@@ -199,6 +209,63 @@ class FirebaseMatchRepository @Inject constructor(
         return file
     }
 
+    /**
+     * One batch: the tombstone (every content field deleted, so the rules can check exactly what
+     * is left), the photo or voice note it carried, and the chat's preview if this was the latest.
+     */
+    override suspend fun unsend(matchId: String, message: Message) {
+        requireOnline("Unsending needs a connection. Try again when you're back online.")
+        val uid = auth.requireUid()
+        check(message.canUnsend(uid, Instant.now())) { UNSEND_TOO_LATE }
+        val match = matches.document(matchId)
+        val batch = db.batch()
+        batch.update(
+            match.collection("messages").document(message.id),
+            UNSENT_CLEARED_FIELDS.associateWith { FieldValue.delete() } + mapOf(
+                "type" to MessageType.Text.key,
+                "text" to Message.UNSENT_TEXT,
+                "unsentAt" to FieldValue.serverTimestamp(),
+            ),
+        )
+        message.imagePath?.let { batch.delete(db.document(it)) }
+        message.audioId?.let { batch.delete(match.collection("audio").document(it)) }
+        val last = cachedOrServer(match)?.get("lastMessage") as? Map<*, *>
+        val lastSentAt = last?.get("sentAt") as? Timestamp
+        if (last?.str("senderId") == uid && lastSentAt?.toInstant() == message.createdAt) {
+            batch.update(
+                match,
+                "lastMessage",
+                mapOf("text" to Message.UNSENT_TEXT, "senderId" to uid, "type" to MessageType.Text.key, "sentAt" to lastSentAt),
+            )
+        }
+        try {
+            commit(batch.commit())
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) throw IllegalStateException(UNSEND_TOO_LATE)
+            throw e
+        }
+        message.audioId?.let { id -> withContext(Dispatchers.IO) { VoiceFiles.cached(context, id).delete() } }
+    }
+
+    override suspend fun sendEvent(matchId: String, event: ChatEvent) {
+        val uid = auth.requireUid()
+        commit(
+            matches.document(matchId).collection("messages").document().set(
+                mapOf(
+                    "senderId" to uid,
+                    "type" to MessageType.Event.key,
+                    "text" to event.fallback,
+                    "event" to event.code,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                ),
+            ),
+        )
+    }
+
+    private suspend fun cachedOrServer(ref: DocumentReference): DocumentSnapshot? =
+        runCatching { ref.get(Source.CACHE).await() }.getOrNull()?.takeIf { it.exists() }
+            ?: runCatching { ref.get().await() }.getOrNull()
+
     /** Message and the match's `lastMessage` in one batch; there is no server trigger to do it. */
     private suspend fun send(
         matchId: String,
@@ -226,12 +293,13 @@ class FirebaseMatchRepository @Inject constructor(
                 "createdAt" to FieldValue.serverTimestamp(),
             ) + fields + (if (reply != null) mapOf("replyTo" to reply) else emptyMap()),
         )
+        // With read receipts off, even replying doesn't move the marker the other person sees.
+        val receipts = !settings.readReceiptsOff(matchId)
         batch.update(
             match,
             mapOf(
                 "lastMessage" to mapOf("text" to preview.take(200), "senderId" to uid, "type" to type.key, "sentAt" to FieldValue.serverTimestamp()),
-                "lastRead.$uid" to FieldValue.serverTimestamp(),
-            ),
+            ) + (if (receipts) mapOf("lastRead.$uid" to FieldValue.serverTimestamp()) else emptyMap()),
         )
         commit(batch.commit())
     }
@@ -252,12 +320,20 @@ class FirebaseMatchRepository @Inject constructor(
 
     override suspend fun markRead(matchId: String) {
         val uid = auth.currentUser?.uid ?: return
-        runCatching { commit(matches.document(matchId).update("lastRead.$uid", FieldValue.serverTimestamp())) }
+        val match = matches.document(matchId)
+        if (settings.readReceiptsOff(matchId)) {
+            // The newest message's server time too, so a phone clock running behind still covers it.
+            val newest = runCatching { match.get(Source.CACHE).await().get("lastMessage.sentAt") as? Timestamp }.getOrNull()
+            settings.setPrivateRead(matchId, maxOf(System.currentTimeMillis(), newest?.toInstant()?.toEpochMilli() ?: 0L))
+            return
+        }
+        runCatching { commit(match.update("lastRead.$uid", FieldValue.serverTimestamp())) }
     }
 
     private fun List<Match>.newestFirst() = sortedByDescending { it.lastMessage?.sentAt ?: it.createdAt ?: Instant.EPOCH }
 
-    private fun DocumentSnapshot.toMatch(myUid: String): Match? {
+    /** [privateReads]: read markers kept on this phone for chats with read receipts off. */
+    private fun DocumentSnapshot.toMatch(myUid: String, privateReads: Map<String, Long>): Match? {
         val data = data ?: return null
         val users = data.strings("users")
         val other = users.firstOrNull { it != myUid } ?: return null
@@ -280,19 +356,25 @@ class FirebaseMatchRepository @Inject constructor(
                     sentAt = it.instant("sentAt"),
                 )
             },
-            myLastRead = lastRead?.instant(myUid),
+            myLastRead = later(lastRead?.instant(myUid), privateReads[id]),
             otherLastRead = lastRead?.instant(other),
             superLike = data.bool("superLike"),
         )
     }
 
+    private fun later(a: Instant?, millis: Long?): Instant? {
+        val b = millis?.let(Instant::ofEpochMilli) ?: return a
+        return if (a == null || b.isAfter(a)) b else a
+    }
+
     private fun DocumentSnapshot.toMessage(matchId: String): Message {
         val game = mapField("game")?.let { GameCard(GameMode.of(it.str("mode")), it.str("prompt").orEmpty()) }
         val imageId = getString("imageId")
+        val type = MessageType.of(getString("type"))
         return Message(
             id = id,
             senderId = getString("senderId").orEmpty(),
-            type = MessageType.of(getString("type")),
+            type = type,
             text = getString("text").orEmpty(),
             imagePath = imageId?.let { "matches/$matchId/images/$it" },
             imageUrl = imageId?.let { FirestoreImages.url("matches/$matchId/images/$it") },
@@ -313,6 +395,8 @@ class FirebaseMatchRepository @Inject constructor(
             audioId = getString("audioId"),
             durationMs = getLong("durationMs") ?: 0L,
             date = mapField("date")?.let { DateIdea(it.str("title").orEmpty(), it.str("detail").orEmpty(), it.str("emoji").orEmpty()) },
+            event = if (type == MessageType.Event) ChatEvent.of(getString("event")) else null,
+            unsentAt = getTimestamp("unsentAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.toInstant(),
         )
     }
 
@@ -323,5 +407,11 @@ class FirebaseMatchRepository @Inject constructor(
         const val ACK_TIMEOUT_MS = 8_000L
         const val MAX_VOICE_MS = 60_000L
         const val MAX_AUDIO_BYTES = 880 * 1024
+        const val UNSEND_TOO_LATE = "It's been more than 15 minutes, so this one can't be unsent."
+
+        /** Everything a message can carry besides who sent it and when; a tombstone keeps none of it. */
+        val UNSENT_CLEARED_FIELDS = listOf(
+            "imageId", "imageBlurhash", "game", "viewOnce", "viewedAt", "audioId", "durationMs", "date", "replyTo", "reactions", "event",
+        )
     }
 }

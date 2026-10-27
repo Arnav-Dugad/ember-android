@@ -456,6 +456,69 @@ service cloud.firestore {
         && m.text is string && m.text.size() <= 2000;
     }
 
+    // ---------- chat: unsend and event rows ----------
+    // Used by the match update rule and the messages rules below; see docs/DATA_MODEL.md.
+
+    // How long after sending a message its sender may unsend it. Must match Message.UNSEND_WINDOW.
+    function unsendWindow() {
+      return duration.value(15, 'm');
+    }
+
+    // What a tombstone says. Must match Message.UNSENT_TEXT; older app versions show it as text.
+    function unsentText() {
+      return 'Message unsent';
+    }
+
+    // Event codes and the fixed text each carries (what app versions without event rows show).
+    // Must match ChatEvent in the app.
+    function chatEventTexts() {
+      return {'screenshot': 'Took a screenshot of the chat'};
+    }
+
+    // A new event row: a known code, its fixed text, and nothing else attached.
+    function validChatEvent(d) {
+      return d.type == 'event'
+        && d.get('event', null) is string
+        && d.event in chatEventTexts()
+        && d.text == chatEventTexts()[d.event]
+        && d.get('replyTo', null) == null
+        && !('viewOnce' in d);
+    }
+
+    // The sender turns their own message into a tombstone, within the window and once. Afterwards
+    // the doc holds exactly senderId and createdAt (unchanged), type 'text', the fixed text and
+    // unsentAt, so a tombstone can never double as an edit.
+    function unsendsMessage() {
+      return resource.data.senderId == me()
+        && resource.data.get('unsentAt', null) == null
+        && resource.data.type != 'event'
+        && request.time < resource.data.createdAt + unsendWindow()
+        && request.resource.data.keys().hasOnly(['senderId', 'type', 'text', 'createdAt', 'unsentAt'])
+        && request.resource.data.senderId == resource.data.senderId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.type == 'text'
+        && request.resource.data.text == unsentText()
+        && request.resource.data.unsentAt == request.time;
+    }
+
+    // With it, the sender may swap their own latest preview for the tombstone text, keeping its
+    // time (so the chat neither jumps up the list nor turns unread), within the same window.
+    function unsendsLastMessage() {
+      let before = resource.data.get('lastMessage', null);
+      let after = request.resource.data.lastMessage;
+      return before is map
+        && before.senderId == me()
+        && request.time < before.sentAt + unsendWindow()
+        && after is map
+        && after.keys().hasOnly(['text', 'senderId', 'type', 'sentAt'])
+        && after.senderId == me()
+        && after.sentAt == before.sentAt
+        && after.type == 'text'
+        && after.text == unsentText();
+    }
+
+    // ---------- end chat: unsend and event rows ----------
+
     match /matches/{matchId} {
       allow get, list: if isAdult() && me() in resource.data.users;
 
@@ -489,7 +552,9 @@ service cloud.firestore {
                 && request.resource.data.lastRead.diff(resource.data.get('lastRead', {})).affectedKeys().hasOnly([me()])
                 && request.resource.data.lastRead[me()] is timestamp
                 && request.resource.data.lastRead[me()] <= request.time))
-        && (!changed().hasAny(['lastMessage']) || validLastMessage(request.resource.data.lastMessage));
+        && (!changed().hasAny(['lastMessage'])
+            || validLastMessage(request.resource.data.lastMessage)
+            || unsendsLastMessage());
 
       allow delete: if isAdult() && me() in resource.data.users;
 
@@ -568,17 +633,18 @@ service cloud.firestore {
         }
 
         allow read, delete: if isParticipant(matchId);
-        allow update: if isParticipant(matchId) && (isOwnReaction() || opensViewOnce());
+        allow update: if isParticipant(matchId) && (isOwnReaction() || opensViewOnce() || unsendsMessage());
 
         allow create: if isParticipant(matchId)
           && !blocked(me(), otherIn(users()))
           && request.resource.data.keys().hasOnly([
                'senderId', 'type', 'text', 'imageId', 'imageBlurhash', 'game', 'createdAt',
-               'viewOnce', 'audioId', 'durationMs', 'date', 'replyTo'
+               'viewOnce', 'audioId', 'durationMs', 'date', 'replyTo', 'event'
              ])
           && request.resource.data.senderId == me()
           && request.resource.data.createdAt == request.time
-          && request.resource.data.type in messageTypes()
+          && (request.resource.data.type in messageTypes() || validChatEvent(request.resource.data))
+          && (request.resource.data.type == 'event' || !('event' in request.resource.data))
           && request.resource.data.get('text', '') is string
           && request.resource.data.get('text', '').size() <= 2000
           && (request.resource.data.type != 'text'

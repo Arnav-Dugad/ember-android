@@ -527,6 +527,116 @@ describe("chat", () => {
   });
 });
 
+// ---------- chat: unsend and event rows ----------
+describe("chat: unsend and event rows", () => {
+  const UNSENT = "Message unsent";
+  const SHOT = "Took a screenshot of the chat";
+  const minutesAgo = (n) => new Date(Date.now() - n * 60 * 1000);
+  const seedMessage = (id, data) => seed((fs) => setDoc(doc(fs, `matches/${MATCH}/messages/${id}`), data));
+  const msgRef = (uid, id) => doc(db(uid), `matches/${MATCH}/messages/${id}`);
+  // What the app sends: every content field deleted, the fixed text, server time.
+  const tombstone = (extra = {}) => ({
+    type: "text", text: UNSENT, unsentAt: serverTimestamp(),
+    imageId: deleteField(), imageBlurhash: deleteField(), game: deleteField(), viewOnce: deleteField(),
+    viewedAt: deleteField(), audioId: deleteField(), durationMs: deleteField(), date: deleteField(),
+    replyTo: deleteField(), reactions: deleteField(), event: deleteField(), ...extra,
+  });
+
+  test("the sender unsends their own message within 15 minutes, once", async () => {
+    await seedMessage("u1", {
+      senderId: ALICE, type: "text", text: "regret", imageId: null, imageBlurhash: null, game: null,
+      replyTo: { id: "m0", senderId: BOB, text: "hey", type: "text" }, reactions: { bob: "🔥" }, createdAt: minutesAgo(2),
+    });
+    await assertSucceeds(updateDoc(msgRef(ALICE, "u1"), tombstone()));
+    const after = (await getDoc(msgRef(BOB, "u1"))).data();
+    if (after.text !== UNSENT || after.replyTo !== undefined || after.reactions !== undefined) throw new Error("not a tombstone");
+    // Once: a tombstone can't be unsent (or rewritten) again.
+    await assertFails(updateDoc(msgRef(ALICE, "u1"), tombstone()));
+    await assertFails(updateDoc(msgRef(ALICE, "u1"), { text: "edited" }));
+  });
+
+  test("only the sender, only within the window, never an outsider", async () => {
+    await seedMessage("u2", { senderId: ALICE, type: "text", text: "hi", createdAt: minutesAgo(2) });
+    await seedMessage("u3", { senderId: ALICE, type: "text", text: "old", createdAt: minutesAgo(16) });
+    await assertFails(updateDoc(msgRef(BOB, "u2"), tombstone()));
+    await assertFails(updateDoc(msgRef(EVE, "u2"), tombstone()));
+    await assertFails(updateDoc(msgRef(ALICE, "u3"), tombstone()));
+    await assertSucceeds(updateDoc(msgRef(ALICE, "u2"), tombstone()));
+  });
+
+  test("a tombstone keeps exactly the allowed fields", async () => {
+    const original = { senderId: ALICE, type: "text", text: "hi", replyTo: { id: "m0", senderId: BOB, text: "hey", type: "text" }, createdAt: minutesAgo(1) };
+    await seedMessage("u4", original);
+    const ref = msgRef(ALICE, "u4");
+    await assertFails(updateDoc(ref, tombstone({ text: "something else" })));
+    await assertFails(updateDoc(ref, tombstone({ text: "" })));
+    await assertFails(updateDoc(ref, tombstone({ type: "image" })));
+    await assertFails(updateDoc(ref, tombstone({ replyTo: original.replyTo })));
+    await assertFails(updateDoc(ref, tombstone({ unsentAt: new Date() })));
+    await assertFails(updateDoc(ref, tombstone({ createdAt: serverTimestamp() })));
+    await assertFails(updateDoc(ref, tombstone({ senderId: BOB })));
+    await assertFails(updateDoc(ref, tombstone({ note: "x" })));
+    await assertSucceeds(updateDoc(ref, tombstone()));
+  });
+
+  test("unsending a photo deletes its image in the same batch; event rows can't be unsent", async () => {
+    await seed(async (fs) => {
+      await setDoc(doc(fs, `matches/${MATCH}/images/i9`), { owner: ALICE, data: jpeg(64), createdAt: new Date() });
+      await setDoc(doc(fs, `matches/${MATCH}/messages/u5`), { senderId: ALICE, type: "image", text: "", imageId: "i9", imageBlurhash: "LEHV6nWB2yk8", viewOnce: true, createdAt: minutesAgo(3) });
+      await setDoc(doc(fs, `matches/${MATCH}/messages/u6`), { senderId: ALICE, type: "event", text: SHOT, event: "screenshot", createdAt: minutesAgo(1) });
+    });
+    const fs = db(ALICE);
+    const batch = writeBatch(fs);
+    batch.update(doc(fs, `matches/${MATCH}/messages/u5`), tombstone());
+    batch.delete(doc(fs, `matches/${MATCH}/images/i9`));
+    await assertSucceeds(batch.commit());
+    await assertFails(updateDoc(msgRef(ALICE, "u6"), tombstone()));
+  });
+
+  test("the sender swaps their own latest preview for the tombstone text, keeping its time", async () => {
+    const sentAt = Timestamp.fromDate(minutesAgo(2));
+    const preview = (extra = {}) => ({ text: UNSENT, senderId: ALICE, type: "text", sentAt, ...extra });
+    await seed((fs) => updateDoc(doc(fs, `matches/${MATCH}`), { lastMessage: { text: "regret", senderId: ALICE, type: "text", sentAt } }));
+    const match = (uid) => doc(db(uid), `matches/${MATCH}`);
+    await assertFails(updateDoc(match(ALICE), { lastMessage: preview({ sentAt: Timestamp.fromDate(minutesAgo(1)) }) }));
+    await assertFails(updateDoc(match(ALICE), { lastMessage: preview({ text: "edited" }) }));
+    await assertFails(updateDoc(match(ALICE), { lastMessage: preview({ type: "image" }) }));
+    await assertFails(updateDoc(match(BOB), { lastMessage: preview({ senderId: BOB }) }));
+    await assertSucceeds(updateDoc(match(ALICE), { lastMessage: preview() }));
+
+    // Not Bob's preview to blank, and not after the window.
+    const bobs = Timestamp.fromDate(minutesAgo(1));
+    await seed((fs) => updateDoc(doc(fs, `matches/${MATCH}`), { lastMessage: { text: "yo", senderId: BOB, type: "text", sentAt: bobs } }));
+    await assertFails(updateDoc(match(ALICE), { lastMessage: preview({ sentAt: bobs }) }));
+    const stale = Timestamp.fromDate(minutesAgo(20));
+    await seed((fs) => updateDoc(doc(fs, `matches/${MATCH}`), { lastMessage: { text: "old", senderId: ALICE, type: "text", sentAt: stale } }));
+    await assertFails(updateDoc(match(ALICE), { lastMessage: preview({ sentAt: stale }) }));
+  });
+
+  test("event rows: a known code with its fixed text, nothing attached", async () => {
+    const fs = db(ALICE);
+    const event = (extra = {}) => ({ senderId: ALICE, type: "event", text: SHOT, event: "screenshot", createdAt: serverTimestamp(), ...extra });
+    const post = (data) => setDoc(doc(fs, `matches/${MATCH}/messages/${Math.random().toString(36).slice(2)}`), data);
+    await assertSucceeds(post(event()));
+    await assertFails(post(event({ event: "recording" })));
+    await assertFails(post(event({ text: "Arjun stole your photos" })));
+    await assertFails(post(event({ event: null })));
+    await assertFails(post({ senderId: ALICE, type: "event", text: SHOT, createdAt: serverTimestamp() }));
+    await assertFails(post(event({ replyTo: { id: "m0", senderId: BOB, text: "hey", type: "text" } })));
+    await assertFails(post(event({ viewOnce: false })));
+    await assertFails(post(event({ senderId: BOB })));
+    await assertFails(post({ senderId: ALICE, type: "text", text: "hi", event: "screenshot", createdAt: serverTimestamp() }));
+    await assertFails(setDoc(doc(db(EVE), `matches/${MATCH}/messages/e1`), event({ senderId: EVE })));
+    // Never the chat's preview, and never quoted.
+    await assertFails(updateDoc(doc(fs, `matches/${MATCH}`), { lastMessage: { text: SHOT, senderId: ALICE, type: "event", sentAt: serverTimestamp() } }));
+    await assertFails(post({ senderId: ALICE, type: "text", text: "hi", createdAt: serverTimestamp(), replyTo: { id: "e0", senderId: ALICE, text: SHOT, type: "event" } }));
+    // Blocks stop them like any message.
+    await seed((s) => setDoc(doc(s, "users/bob/blocks/alice"), { createdAt: new Date() }));
+    await assertFails(post(event()));
+  });
+});
+// ---------- end chat: unsend and event rows ----------
+
 describe("private albums", () => {
   const request = { ownerId: BOB, viewerId: ALICE, status: "pending", requestedAt: serverTimestamp(), updatedAt: serverTimestamp() };
 

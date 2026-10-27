@@ -99,7 +99,7 @@ class ChatNotifier @Inject constructor(
             MessageType.Voice -> "🎤 Voice note"
             MessageType.Game -> "🎲 " + last.text
             MessageType.Date -> "📅 " + last.text
-            MessageType.Text -> last.text
+            MessageType.Text, MessageType.Event -> last.text
         }
         Notifications.show(
             context,

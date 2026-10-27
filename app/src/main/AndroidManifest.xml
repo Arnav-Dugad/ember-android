@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- The 30-second voice intro on your profile; asked for the first time you tap record. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Screenshot alerts in chat (Android 14+): a normal permission, granted at install. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
     <!-- The in-app updater installs new releases downloaded from GitHub. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

@@ -227,6 +227,7 @@ object Persona {
                 "[Truth or Dare card: ${if (it.mode == GameMode.Truth) "Truth" else "Dare"}] ${it.prompt}"
             } ?: message.text
             MessageType.Date -> message.date?.let { "[suggested a date: ${it.emoji} ${it.title}. ${it.detail}]" } ?: message.text
+            MessageType.Event -> "[${message.text}]"
         }
         val reply = message.replyTo?.let { "(replying to \"${it.text.take(60)}\") " }.orEmpty()
         return reply + body

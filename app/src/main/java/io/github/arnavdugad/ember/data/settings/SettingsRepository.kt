@@ -32,6 +32,16 @@ data class AppSettings(
     val notificationsPrompted: Boolean = false,
 )
 
+/** The chat's privacy switches, from the chat options sheet. */
+data class ChatPrefs(
+    /** Blur every received photo until tapped. Off: only photos that arrived before I'd replied. */
+    val blurAllPhotos: Boolean = false,
+    /** Tell the other person when I screenshot a chat (Android 14+), and show me when they do. */
+    val screenshotAlerts: Boolean = true,
+    /** Matches where the other person doesn't see "Read" from me. */
+    val receiptsOff: Set<String> = emptySet(),
+)
+
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ember_settings")
 
 /** Device-local preferences. Nothing here is sensitive; it is excluded from backup anyway. */
@@ -154,6 +164,39 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         store.edit { prefs -> sentAt.forEach { (matchId, millis) -> prefs[notifiedMessageKey(matchId)] = millis } }
     }
 
+    // --- Chat privacy. Device-local on purpose: see docs/DATA_MODEL.md, "Read receipts". ---
+
+    val chatPrefs: Flow<ChatPrefs> = store.data.map { p ->
+        ChatPrefs(
+            blurAllPhotos = p[BLUR_ALL_PHOTOS] ?: false,
+            screenshotAlerts = p[SCREENSHOT_ALERTS] ?: true,
+            receiptsOff = p[RECEIPTS_OFF].orEmpty(),
+        )
+    }.distinctUntilChanged()
+
+    suspend fun readReceiptsOff(matchId: String): Boolean = matchId in store.data.first()[RECEIPTS_OFF].orEmpty()
+
+    suspend fun setReadReceipts(matchId: String, enabled: Boolean) = store.edit {
+        val current = it[RECEIPTS_OFF].orEmpty()
+        it[RECEIPTS_OFF] = if (enabled) current - matchId else current + matchId
+    }
+
+    suspend fun setBlurAllPhotos(enabled: Boolean) = store.edit { it[BLUR_ALL_PHOTOS] = enabled }
+
+    suspend fun setScreenshotAlerts(enabled: Boolean) = store.edit { it[SCREENSHOT_ALERTS] = enabled }
+
+    /** Per match, how far I've read (epoch millis) while read receipts were off there. Never leaves the phone. */
+    val privateReads: Flow<Map<String, Long>> = store.data.map { p ->
+        p.asMap().mapNotNull { (key, value) ->
+            if (key.name.startsWith(PRIVATE_READ_PREFIX) && value is Long) key.name.removePrefix(PRIVATE_READ_PREFIX) to value else null
+        }.toMap()
+    }.distinctUntilChanged()
+
+    suspend fun setPrivateRead(matchId: String, millis: Long) = store.edit {
+        val key = privateReadKey(matchId)
+        if ((it[key] ?: 0L) < millis) it[key] = millis
+    }
+
     private companion object {
         val THEME = stringPreferencesKey("theme_mode")
         val AFTER_DARK = booleanPreferencesKey("after_dark")
@@ -176,7 +219,13 @@ class SettingsRepository @Inject constructor(@ApplicationContext context: Contex
         val NOTIFIED_VERSION = stringPreferencesKey("update_notified_version")
         val ARCHIVED_MATCHES = stringSetPreferencesKey("archived_matches")
         const val NOTIFIED_MESSAGE_PREFIX = "notified_message_"
+        val BLUR_ALL_PHOTOS = booleanPreferencesKey("chat_blur_all_photos")
+        val SCREENSHOT_ALERTS = booleanPreferencesKey("chat_screenshot_alerts")
+        val RECEIPTS_OFF = stringSetPreferencesKey("chat_receipts_off")
+        const val PRIVATE_READ_PREFIX = "chat_private_read_"
 
         fun notifiedMessageKey(matchId: String) = longPreferencesKey(NOTIFIED_MESSAGE_PREFIX + matchId)
+
+        fun privateReadKey(matchId: String) = longPreferencesKey(PRIVATE_READ_PREFIX + matchId)
     }
 }
