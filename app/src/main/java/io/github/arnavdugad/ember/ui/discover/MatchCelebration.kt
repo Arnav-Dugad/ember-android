@@ -38,7 +38,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
-import io.github.arnavdugad.ember.core.designsystem.EmberBurst
+import io.github.arnavdugad.ember.core.designsystem.ConfettiBurst
 import io.github.arnavdugad.ember.core.designsystem.EmberButton
 import io.github.arnavdugad.ember.core.designsystem.EmberShapes
 import io.github.arnavdugad.ember.core.designsystem.EmberTheme
@@ -53,8 +53,9 @@ import kotlinx.coroutines.launch
 
 /**
  * "It's a match": both photos fly in from opposite edges and settle into a tilted overlap, a
- * heart pops between them, embers and sparks burst out, and the headline springs in on a glass
- * card over the blurred deck.
+ * heart pops between them, confetti in both photos' colours and sparks burst out, and the headline
+ * springs in on a glass card over the blurred deck. If their like was a super like, the heart
+ * lands with a heartbeat.
  */
 @Composable
 fun MatchCelebration(
@@ -83,6 +84,7 @@ fun MatchCelebration(
         }
         launch {
             delay(380)
+            if (celebration.theySuperLiked) haptics.heartbeat()
             heart.animateTo(1f, spring(dampingRatio = Spring.DampingRatioHighBouncy, stiffness = 300f))
         }
         launch {
@@ -102,7 +104,12 @@ fun MatchCelebration(
             .background(colors.scrim)
             .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } },
     ) {
-        EmberBurst(key = match.id, modifier = Modifier.fillMaxSize(), origin = androidx.compose.ui.geometry.Offset(0.5f, 0.34f))
+        ConfettiBurst(
+            key = match.id,
+            modifier = Modifier.fillMaxSize(),
+            origin = androidx.compose.ui.geometry.Offset(0.5f, 0.34f),
+            photoColors = celebration.confetti,
+        )
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
             val travel = maxWidth
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {

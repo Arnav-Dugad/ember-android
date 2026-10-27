@@ -60,8 +60,8 @@ import io.github.arnavdugad.ember.core.designsystem.GlassIconButton
 import io.github.arnavdugad.ember.core.designsystem.GlassScene
 import io.github.arnavdugad.ember.core.designsystem.GlassSurface
 import io.github.arnavdugad.ember.core.designsystem.GlassTag
+import io.github.arnavdugad.ember.core.designsystem.LiquidPageIndicator
 import io.github.arnavdugad.ember.core.designsystem.LocalHazeState
-import io.github.arnavdugad.ember.core.designsystem.PaginationBars
 import io.github.arnavdugad.ember.core.designsystem.SectionHeader
 import io.github.arnavdugad.ember.core.designsystem.glass
 import io.github.arnavdugad.ember.core.designsystem.pressable
@@ -246,9 +246,9 @@ private fun ProfileBody(
                     .height(140.dp)
                     .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent))),
             )
-            PaginationBars(
+            LiquidPageIndicator(
                 profile.photos.size,
-                pager.currentPage,
+                { pager.currentPage + pager.currentPageOffsetFraction },
                 Modifier.statusBarsPadding().padding(start = 76.dp, end = 76.dp, top = 28.dp),
             )
         }

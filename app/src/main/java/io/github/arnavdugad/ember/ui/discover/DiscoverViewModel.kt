@@ -6,8 +6,10 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.arnavdugad.ember.core.analytics.Analytics
 import io.github.arnavdugad.ember.core.image.PaletteExtractor
+import io.github.arnavdugad.ember.core.image.interleave
 import io.github.arnavdugad.ember.data.location.CitySuggestion
 import io.github.arnavdugad.ember.data.location.LocationRepository
+import io.github.arnavdugad.ember.data.model.Admirer
 import io.github.arnavdugad.ember.data.model.DiscoveryFilters
 import io.github.arnavdugad.ember.data.model.Match
 import io.github.arnavdugad.ember.data.model.Profile
@@ -17,6 +19,7 @@ import io.github.arnavdugad.ember.data.repo.MatchRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.settings.SettingsRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -52,7 +55,16 @@ data class DiscoverState(
     val picksFresh: Boolean = false,
 )
 
-data class Celebration(val match: Match, val them: Profile?)
+/**
+ * A match to celebrate. [theySuperLiked] is whether the other person's like was a super like (the
+ * match's own flag is whoever completed it); [confetti] fills in with colours from both photos.
+ */
+data class Celebration(
+    val match: Match,
+    val them: Profile?,
+    val theySuperLiked: Boolean = false,
+    val confetti: List<Color> = emptyList(),
+)
 
 @HiltViewModel
 class DiscoverViewModel @Inject constructor(
@@ -74,13 +86,18 @@ class DiscoverViewModel @Inject constructor(
     val myPhotoUrl: StateFlow<String?> = me.map { it?.firstPhoto?.url }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    /** Everyone who liked me; also tells a celebration whether their like was a super like. */
+    private val admirers: StateFlow<List<Admirer>> = discovery.observeLikesYou()
+        .catch { emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     /** People who liked me and aren't matched yet: the "Likes you" chip's count. */
     val likesYouCount: StateFlow<Int> = combine(
-        discovery.observeLikesYou().catch { emit(emptyList()) },
+        admirers,
         matches.observeMatches().catch { emit(emptyList()) },
-    ) { admirers, matchList ->
+    ) { likes, matchList ->
         val matched = matchList.map { it.otherUid }.toSet()
-        admirers.count { it.uid !in matched }
+        likes.count { it.uid !in matched }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     private var loadJob: Job? = null
@@ -92,6 +109,7 @@ class DiscoverViewModel @Inject constructor(
 
     /** Profiles liked this session, so a new match can be celebrated (not ones from earlier). */
     private val recentLikes = mutableMapOf<String, Profile>()
+    private val mySuperLikes = mutableSetOf<String>()
     private var knownMatches: Set<String>? = null
     private val celebrated = mutableSetOf<String>()
 
@@ -166,6 +184,7 @@ class DiscoverViewModel @Inject constructor(
             )
         }
         if (direction != SwipeDirection.Nope) recentLikes[profile.uid] = profile
+        if (direction == SwipeDirection.Super) mySuperLikes += profile.uid
         analytics.log("swipe", "direction" to direction.key)
         viewModelScope.launch {
             val result = runCatching { discovery.swipe(profile, direction) }
@@ -238,8 +257,23 @@ class DiscoverViewModel @Inject constructor(
 
     private fun celebrate(match: Match, them: Profile?) {
         if (!celebrated.add(match.id)) return
-        _state.update { it.copy(celebration = Celebration(match, them)) }
+        // Their like doc says so directly; failing that, a super-like match I didn't super like was theirs.
+        val theySuper = admirers.value.any { it.uid == match.otherUid && it.superLike } ||
+            (match.superLike && match.otherUid !in mySuperLikes)
+        _state.update { it.copy(celebration = Celebration(match, them, theySuperLiked = theySuper)) }
         analytics.log("match", "super" to match.superLike)
+        // The confetti starts in brand colours and takes on both photos' colours once sampled.
+        val myUrl = myPhotoUrl.value
+        viewModelScope.launch {
+            val theirs = async { vividColors(match.otherPhotoUrl) }
+            val mine = async { vividColors(myUrl) }
+            val colors = interleave(theirs.await(), mine.await())
+            if (colors.isEmpty()) return@launch
+            _state.update { s ->
+                val c = s.celebration
+                if (c?.match?.id == match.id) s.copy(celebration = c.copy(confetti = colors)) else s
+            }
+        }
     }
 
     /** Travel mode off: back to browsing from your own city. */
@@ -284,6 +318,9 @@ class DiscoverViewModel @Inject constructor(
 
     private suspend fun myProfileOnce(): Profile? =
         runCatching { withTimeoutOrNull(3_000) { profiles.observeMyProfile().first { it != null } } }.getOrNull()
+
+    private suspend fun vividColors(url: String?): List<Color> =
+        url?.let { runCatching { palette.vivid(it) }.getOrNull() }.orEmpty()
 
     private fun updateGlow() {
         val url = _state.value.deck.firstOrNull()?.firstPhoto?.url ?: return
