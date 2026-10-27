@@ -256,7 +256,7 @@ private fun ProfileBody(
                         DemoBadge()
                     }
                 }
-                val place = listOfNotNull(profile.city.ifBlank { null }, Geo.distanceLabel(profile.distanceKm)).joinToString(" · ")
+                val place = listOfNotNull(profile.city.ifBlank { null }, Geo.distanceLabel(profile.shownDistanceKm)).joinToString(" · ")
                 if (place.isNotEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                         Icon(Icons.Rounded.LocationOn, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp))

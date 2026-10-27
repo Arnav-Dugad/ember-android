@@ -28,6 +28,7 @@ import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import io.github.arnavdugad.ember.data.repo.UnderageException
@@ -37,6 +38,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -56,7 +65,8 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
     DiscoveryRepository,
     MatchRepository,
     AlbumRepository,
-    SafetyRepository {
+    SafetyRepository,
+    PrivacyRepository {
 
     override val mode = BackendMode.Preview
 
@@ -111,6 +121,15 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
 
     override fun signInProvider(): String? = null
     override suspend fun reauthenticate(activity: Activity, password: String?) = Unit
+
+    override fun signInMethods(): Set<String> = emptySet()
+    override fun accountEmail(): String? = null
+    override suspend fun addPassword(activity: Activity, password: String) = noLogin()
+    override suspend fun linkGoogle(activity: Activity) = noLogin()
+    override suspend fun changePassword(currentPassword: String, newPassword: String) = noLogin()
+
+    private fun noLogin(): Nothing =
+        throw UnsupportedOperationException("Preview mode has no login to manage: everything stays on this phone. Sign-in methods need a Firebase project.")
 
     override suspend fun refreshClaims(): Boolean = authUser.value?.isAdult == true
 
@@ -336,10 +355,58 @@ class PreviewBackend @Inject constructor(@ApplicationContext private val context
         authUser.value = null
     }
 
+    // --- Privacy ---
+
+    override suspend fun setHideDistance(hide: Boolean) {
+        persist { it.copy(hideDistance = hide) }
+        me.update { it?.copy(hideDistance = hide) }
+    }
+
+    override suspend fun setPaused(paused: Boolean) {
+        persist { it.copy(paused = paused) }
+        me.update { it?.copy(paused = paused) }
+    }
+
+    /** Preview keeps everything on the phone; the export is the saved profile plus this session's chats. */
+    override suspend fun exportMyData(): String {
+        val root = buildJsonObject {
+            put("format", "Ember data export, version 1 (Preview mode)")
+            put("exportedAt", Instant.now().toString())
+            put("profile", stored?.let { Json.encodeToJsonElement(StoredProfile.serializer(), it) } ?: JsonNull)
+            putJsonObject("swipes") { swipes.forEach { (uid, direction) -> put(uid, direction.key) } }
+            putJsonArray("blocks") { blocked.forEach { add(JsonPrimitive(it)) } }
+            putJsonArray("matches") {
+                matches.value.values.forEach { match ->
+                    add(
+                        buildJsonObject {
+                            put("id", match.id)
+                            put("with", match.otherName)
+                            put("createdAt", match.createdAt?.toString())
+                            putJsonArray("messagesISent") {
+                                messages.value[match.id].orEmpty().filter { it.senderId == ME }.sortedBy { it.createdAt }.forEach { m ->
+                                    add(
+                                        buildJsonObject {
+                                            put("type", m.type.key)
+                                            put("text", m.text)
+                                            m.game?.let { put("game", "${it.mode.key}: ${it.prompt}") }
+                                            put("createdAt", m.createdAt?.toString())
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        return PrettyJson.encodeToString(JsonObject.serializer(), root)
+    }
+
     private fun matchId(other: String) = listOf(ME, other).sorted().joinToString("_")
     private fun newId() = UUID.randomUUID().toString()
 
     companion object {
         const val ME = "preview-me"
+        private val PrettyJson = Json { prettyPrint = true }
     }
 }

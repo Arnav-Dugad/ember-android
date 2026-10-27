@@ -418,7 +418,7 @@ fun ProfileCard(
                     Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = "Open ${profile.name}'s profile", tint = Color.White, modifier = Modifier.size(20.dp))
                 }
             }
-            val place = listOfNotNull(Geo.distanceLabel(profile.distanceKm), profile.city.ifBlank { null }).joinToString(" · ")
+            val place = listOfNotNull(Geo.distanceLabel(profile.shownDistanceKm), profile.city.ifBlank { null }).joinToString(" · ")
             if (place.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                     Icon(Icons.Rounded.LocationOn, contentDescription = null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(15.dp))

@@ -152,7 +152,9 @@ service cloud.firestore {
           'uid', 'name', 'age', 'gender', 'interestedIn', 'bio', 'photos', 'prompts',
           'interests', 'vibes', 'lookingFor', 'heightCm', 'city', 'geohash', 'lat', 'lng',
           'afterDark', 'privateAlbumCount', 'isDemo', 'onboarded', 'createdAt', 'updatedAt',
-          'lastActiveAt'
+          'lastActiveAt',
+          // Privacy switches.
+          'hideDistance', 'paused'
         ])
         && d.uid == uid
         && ageMatches(uid, d)
@@ -176,6 +178,8 @@ service cloud.firestore {
         && (!('lng' in d) || (isCoarse(d.lng) && d.lng >= -180 && d.lng <= 180))
         && optionalBool(d, 'afterDark')
         && optionalBool(d, 'onboarded')
+        && optionalBool(d, 'hideDistance')
+        && optionalBool(d, 'paused')
         && (!('privateAlbumCount' in d) || (d.privateAlbumCount is int
               && d.privateAlbumCount >= 0 && d.privateAlbumCount <= 12))
         && optionalTimestamp(d, 'updatedAt')
@@ -436,9 +440,64 @@ service cloud.firestore {
 
     // ---------- moderation ----------
 
+    // Today's UTC date as yyyy-MM-dd, the id of the per-day counter docs.
+    function pad2(n) {
+      return n < 10 ? '0' + string(n) : string(n);
+    }
+
+    function utcDay() {
+      return string(request.time.year()) + '-' + pad2(request.time.month()) + '-' + pad2(request.time.day());
+    }
+
+    function limitPath(uid, day) {
+      return /databases/$(database)/documents/users/$(uid)/limits/$(day);
+    }
+
+    // Reports have deterministic ids: {reporterId}_{yyyy-MM-dd}_{n}, n being the day's counter
+    // value after this report. Two reports can never share a counter step.
+    function reportPath(uid, day, n) {
+      return /databases/$(database)/documents/reports/$(uid + '_' + day + '_' + string(n));
+    }
+
+    // At most this many reports per reporter per UTC day.
+    function maxReportsPerDay() {
+      return 20;
+    }
+
+    // The report must arrive in the same batch as a +1 on today's counter, and its id must name
+    // that step. Without a server, this is what stops one account flooding the moderation queue.
+    function countsTowardsLimit(reportId) {
+      let path = limitPath(me(), utcDay());
+      let before = exists(path) ? get(path).data.reports : 0;
+      let after = getAfter(path).data.reports;
+      return after == before + 1
+        && after <= maxReportsPerDay()
+        && reportId == me() + '_' + utcDay() + '_' + string(after);
+    }
+
+    // users/{uid}/limits/{yyyy-MM-dd} = { reports: int }. Only today's doc can be written, only
+    // in steps of one, and only alongside the report that step stands for. Kept (like reports)
+    // when an account is deleted, so deleting it can't reset the limit.
+    match /users/{uid}/limits/{day} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && isAdult()
+        && day == utcDay()
+        && request.resource.data.keys().hasOnly(['reports'])
+        && request.resource.data.reports == 1
+        && existsAfter(reportPath(uid, day, 1));
+      allow update: if isOwner(uid) && isAdult()
+        && day == utcDay()
+        && request.resource.data.keys().hasOnly(['reports'])
+        && request.resource.data.reports == resource.data.reports + 1
+        && request.resource.data.reports <= maxReportsPerDay()
+        && existsAfter(reportPath(uid, day, request.resource.data.reports));
+      allow delete: if false;
+    }
+
     match /reports/{reportId} {
       allow read, update, delete: if false;
       allow create: if isAdult()
+        && countsTowardsLimit(reportId)
         && request.resource.data.keys().hasOnly(['reporterId', 'targetId', 'reason', 'details', 'matchId', 'createdAt', 'status'])
         && request.resource.data.reporterId == me()
         && request.resource.data.targetId is string

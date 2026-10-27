@@ -17,13 +17,39 @@ import io.github.arnavdugad.ember.data.model.ProfileDraft
 import io.github.arnavdugad.ember.data.model.ReportReason
 import io.github.arnavdugad.ember.data.model.SwipeDirection
 import kotlinx.coroutines.flow.Flow
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 
 /** Which backend the app is talking to. Preview is the offline, in-memory demo. */
 enum class BackendMode { Firebase, Preview }
 
 /** Thrown by [ProfileRepository.completeAgeGate] when the server says the user is under 18. */
 class UnderageException : Exception("You must be 18 or older to use Ember.")
+
+/** Reports are capped per reporter per UTC day; the security rules enforce it with a counter doc. */
+object ReportLimits {
+    const val PER_DAY = 20
+
+    /** The counter doc id: the UTC date as yyyy-MM-dd. */
+    fun dayId(now: Instant): String = now.atOffset(ZoneOffset.UTC).toLocalDate().toString()
+
+    /** Report ids name the counter step they used, so a step can never carry two reports. */
+    fun reportId(uid: String, day: String, n: Long): String = "${uid}_${day}_$n"
+}
+
+/** Thrown by [SafetyRepository.report] once today's report limit is used up. */
+class ReportLimitException(blocked: Boolean) : Exception(
+    if (blocked) {
+        "You've reached today's limit of ${ReportLimits.PER_DAY} reports, so this one wasn't sent. We've still blocked them."
+    } else {
+        "You've reached today's limit of ${ReportLimits.PER_DAY} reports. You can still block anyone, and report again tomorrow."
+    },
+)
+
+/** Firebase provider ids, as returned by [AuthRepository.signInMethods]. */
+const val PROVIDER_GOOGLE = "google.com"
+const val PROVIDER_PASSWORD = "password"
 
 interface AuthRepository {
     val mode: BackendMode
@@ -44,6 +70,21 @@ interface AuthRepository {
 
     /** Fresh sign-in proof, required by Firebase before deleting or linking an account. */
     suspend fun reauthenticate(activity: Activity, password: String?)
+
+    /** Every sign-in method linked to this login: [PROVIDER_GOOGLE] and/or [PROVIDER_PASSWORD]. Empty in Preview. */
+    fun signInMethods(): Set<String>
+
+    /** The login's email address, if it has one. */
+    fun accountEmail(): String?
+
+    /** For Google logins: confirms with Google, then adds an email + password sign-in. */
+    suspend fun addPassword(activity: Activity, password: String)
+
+    /** For email logins: links a Google account so either can sign in. */
+    suspend fun linkGoogle(activity: Activity)
+
+    /** For password logins: confirms the current password, then sets a new one. */
+    suspend fun changePassword(currentPassword: String, newPassword: String)
 
     /** Re-reads the ID token so a freshly granted `adult` claim takes effect. */
     suspend fun refreshClaims(): Boolean
@@ -111,4 +152,16 @@ interface SafetyRepository {
     suspend fun block(uid: String)
     suspend fun report(uid: String, reason: ReportReason, details: String, matchId: String?, alsoBlock: Boolean)
     suspend fun deleteAccount()
+}
+
+/** The Privacy screen's switches and the data export. */
+interface PrivacyRepository {
+    /** True: others see only my city, never "N km away". */
+    suspend fun setHideDistance(hide: Boolean)
+
+    /** True: I'm left out of everyone's discovery deck. Matches and chats carry on. */
+    suspend fun setPaused(paused: Boolean)
+
+    /** Everything Ember stores about me, plus the messages I sent, as pretty-printed JSON. */
+    suspend fun exportMyData(): String
 }

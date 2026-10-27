@@ -14,6 +14,7 @@ import io.github.arnavdugad.ember.data.remote.FirebaseAlbumRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseAuthRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseDiscoveryRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseMatchRepository
+import io.github.arnavdugad.ember.data.remote.FirebasePrivacyRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseProfileRepository
 import io.github.arnavdugad.ember.data.remote.FirebaseSafetyRepository
 import io.github.arnavdugad.ember.data.repo.AlbumRepository
@@ -21,6 +22,7 @@ import io.github.arnavdugad.ember.data.repo.AuthRepository
 import io.github.arnavdugad.ember.data.repo.BackendMode
 import io.github.arnavdugad.ember.data.repo.DiscoveryRepository
 import io.github.arnavdugad.ember.data.repo.MatchRepository
+import io.github.arnavdugad.ember.data.repo.PrivacyRepository
 import io.github.arnavdugad.ember.data.repo.ProfileRepository
 import io.github.arnavdugad.ember.data.repo.SafetyRepository
 import kotlinx.serialization.json.Json
@@ -76,6 +78,11 @@ object AppModule {
     @Provides
     @Singleton
     fun safety(mode: BackendMode, firebase: Provider<FirebaseSafetyRepository>, preview: Provider<PreviewBackend>): SafetyRepository =
+        if (mode == BackendMode.Firebase) firebase.get() else preview.get()
+
+    @Provides
+    @Singleton
+    fun privacy(mode: BackendMode, firebase: Provider<FirebasePrivacyRepository>, preview: Provider<PreviewBackend>): PrivacyRepository =
         if (mode == BackendMode.Firebase) firebase.get() else preview.get()
 
     @Provides

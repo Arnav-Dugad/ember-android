@@ -73,6 +73,7 @@ import io.github.arnavdugad.ember.ui.profile.MeScreen
 import io.github.arnavdugad.ember.ui.profile.ProfileDetailScreen
 import io.github.arnavdugad.ember.ui.root.DeepLink
 import io.github.arnavdugad.ember.ui.root.DeepLinks
+import io.github.arnavdugad.ember.ui.settings.PrivacyScreen
 import io.github.arnavdugad.ember.ui.settings.SettingsScreen
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
@@ -91,6 +92,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object EditProfileRoute
 
 @Serializable data object SettingsRoute
+
+@Serializable data object PrivacyRoute
 
 @Serializable data object MyAlbumRoute
 
@@ -225,7 +228,8 @@ fun MainScaffold(deepLinks: DeepLinks) {
                         )
                     }
                     composable<EditProfileRoute> { EditProfileScreen(onBack = { nav.popBackStack() }) }
-                    composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }) }
+                    composable<SettingsRoute> { SettingsScreen(onBack = { nav.popBackStack() }, onPrivacy = { nav.navigate(PrivacyRoute) }) }
+                    composable<PrivacyRoute> { PrivacyScreen(onBack = { nav.popBackStack() }) }
                     composable<MyAlbumRoute> { MyAlbumScreen(onBack = { nav.popBackStack() }) }
                     composable<AlbumViewerRoute> { backStack ->
                         val route = backStack.toRoute<AlbumViewerRoute>()

@@ -141,6 +141,27 @@ describe("profiles", () => {
     await assertFails(updateDoc(doc(db(EVE), "users/alice"), { bio: "pwned" }));
   });
 
+  test("privacy switches are optional booleans the owner sets", async () => {
+    const fs = db(ALICE);
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideDistance: true, paused: true }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { hideDistance: false }));
+    await assertSucceeds(updateDoc(doc(fs, "users/alice"), { paused: false }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { hideDistance: "yes" }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { paused: 1 }));
+    await assertFails(updateDoc(doc(fs, "users/alice"), { paused: null }));
+    await assertFails(updateDoc(doc(db(EVE), "users/alice"), { paused: true }));
+    // Paused profiles are left out of the deck by the app, but stay readable (matches still see them).
+    await assertSucceeds(getDoc(doc(db(BOB), "users/alice")));
+  });
+
+  test("a new profile may start with the privacy switches", async () => {
+    const fs = db("newbie");
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, "users/newbie/private/account"), { ...adultBirth, termsVersion: "2026-10", termsAcceptedAt: serverTimestamp() });
+    batch.set(doc(fs, "users/newbie"), { uid: "newbie", age: adultAge, onboarded: false, hideDistance: true, paused: false });
+    await assertSucceeds(batch.commit());
+  });
+
   test("blocked users cannot get the blocker", async () => {
     await seed((fs) => setDoc(doc(fs, "users/alice/blocks/eve"), { createdAt: new Date() }));
     await assertFails(getDoc(doc(db(EVE), "users/alice")));
@@ -377,18 +398,81 @@ describe("safety", () => {
     await assertSucceeds(deleteDoc(doc(db(ALICE), "users/alice/blocks/eve")));
   });
 
-  test("reports are create-only", async () => {
-    const report = {
-      reporterId: ALICE, targetId: EVE, reason: "harassment", details: "", matchId: null, createdAt: serverTimestamp(), status: "open",
-    };
-    await assertSucceeds(setDoc(doc(db(ALICE), "reports/r1"), report));
-    await assertFails(setDoc(doc(db(ALICE), "reports/r2"), { ...report, reporterId: BOB }));
-    await assertFails(setDoc(doc(db(ALICE), "reports/r3"), { ...report, reason: "bored" }));
-    await assertFails(getDoc(doc(db(ALICE), "reports/r1")));
-  });
-
   test("demo metadata is invisible", async () => {
     await assertFails(getDoc(doc(db(ALICE), `demoMeta/${DEMO}`)));
     await assertFails(setDoc(doc(db(ALICE), "demoMeta/alice"), { likesBack: true }));
+  });
+});
+
+describe("reports and the daily report limit", () => {
+  // The rules compare against the UTC date of request.time. (Run near 00:00 UTC, a test could
+  // straddle midnight; that is the only source of flakiness here.)
+  const today = () => new Date().toISOString().slice(0, 10);
+  const yesterday = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const report = (extra = {}) => ({
+    reporterId: ALICE, targetId: EVE, reason: "harassment", details: "", matchId: null, createdAt: serverTimestamp(), status: "open", ...extra,
+  });
+
+  // The client's write: today's counter +1 and the report whose id names that step, in one batch.
+  function sendReport(uid, n, { day = today(), counter = n, id = `${uid}_${day}_${n}`, extra = {} } = {}) {
+    const fs = db(uid);
+    const batch = writeBatch(fs);
+    batch.set(doc(fs, `users/${uid}/limits/${day}`), { reports: counter });
+    batch.set(doc(fs, `reports/${id}`), report({ reporterId: uid, ...extra }));
+    return batch.commit();
+  }
+
+  test("reports are create-only and go with today's counter", async () => {
+    await assertSucceeds(sendReport(ALICE, 1));
+    await assertSucceeds(sendReport(ALICE, 2));
+    await assertFails(getDoc(doc(db(ALICE), `reports/alice_${today()}_1`)));
+    await assertFails(updateDoc(doc(db(ALICE), `reports/alice_${today()}_1`), { details: "edited" }));
+    await assertFails(deleteDoc(doc(db(ALICE), `reports/alice_${today()}_1`)));
+    await assertFails(sendReport(ALICE, 3, { extra: { reporterId: BOB } }));
+    await assertFails(sendReport(ALICE, 3, { extra: { reason: "bored" } }));
+    await assertFails(sendReport(ALICE, 3, { extra: { targetId: ALICE } }));
+    await assertFails(sendReport("stranger", 1));
+  });
+
+  test("a report without exactly one counter step is rejected", async () => {
+    // No counter at all.
+    await assertFails(setDoc(doc(db(ALICE), `reports/alice_${today()}_1`), report()));
+    // A free-form report id.
+    await assertFails(sendReport(ALICE, 1, { id: "r1" }));
+    // Skipping a step, or an id that doesn't match the step.
+    await assertFails(sendReport(ALICE, 2));
+    await assertFails(sendReport(ALICE, 1, { id: `alice_${today()}_7` }));
+    // Yesterday's (or any other day's) counter.
+    await assertFails(sendReport(ALICE, 1, { day: yesterday() }));
+    // A second report can't ride on a step that's already been used.
+    await assertSucceeds(sendReport(ALICE, 1));
+    await assertFails(setDoc(doc(db(ALICE), `reports/alice_${today()}_2`), report()));
+  });
+
+  test("the counter only moves with a report", async () => {
+    const fs = db(ALICE);
+    await assertFails(setDoc(doc(fs, `users/alice/limits/${today()}`), { reports: 1 }));
+    await assertSucceeds(sendReport(ALICE, 1));
+    await assertFails(setDoc(doc(fs, `users/alice/limits/${today()}`), { reports: 2 }));
+    await assertFails(setDoc(doc(fs, `users/alice/limits/${today()}`), { reports: 0 }));
+    await assertFails(setDoc(doc(fs, `users/alice/limits/${today()}`), { reports: 2, extra: true }));
+    // Nobody resets it, and only the owner reads it.
+    await assertFails(deleteDoc(doc(fs, `users/alice/limits/${today()}`)));
+    await assertSucceeds(getDoc(doc(fs, `users/alice/limits/${today()}`)));
+    await assertFails(getDoc(doc(db(EVE), `users/alice/limits/${today()}`)));
+    // Nobody writes someone else's counter.
+    const eve = db(EVE);
+    const batch = writeBatch(eve);
+    batch.set(doc(eve, `users/alice/limits/${today()}`), { reports: 2 });
+    batch.set(doc(eve, `reports/alice_${today()}_2`), report());
+    await assertFails(batch.commit());
+  });
+
+  test("at most 20 reports per UTC day", async () => {
+    await seed((fs) => setDoc(doc(fs, `users/alice/limits/${today()}`), { reports: 19 }));
+    await assertSucceeds(sendReport(ALICE, 20));
+    await assertFails(sendReport(ALICE, 21));
+    // The limit is per reporter.
+    await assertSucceeds(sendReport(BOB, 1));
   });
 });

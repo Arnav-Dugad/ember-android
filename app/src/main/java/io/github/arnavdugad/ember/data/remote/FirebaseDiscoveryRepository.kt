@@ -45,7 +45,7 @@ class FirebaseDiscoveryRepository @Inject constructor(
         // A stable per-day shuffle, real people first: the deck feels fresh without jumping around.
         val random = Random(LocalDate.now().toEpochDay() xor uid.hashCode().toLong())
         return candidates.asSequence()
-            .filter { it.uid != uid && it.uid !in swiped && it.uid !in blocked }
+            .filter { it.uid != uid && it.uid !in swiped && it.uid !in blocked && !it.paused }
             .filter { !(hideDemos && it.isDemo) }
             .filter { it.age in filters.minAge..filters.maxAge }
             .filter { filters.lookingFor.isEmpty() || it.lookingFor in filters.lookingFor }
